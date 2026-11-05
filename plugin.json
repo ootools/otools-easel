@@ -1,0 +1,30 @@
+{
+  "devUrl": "http://127.0.0.1:6493",
+  "developerName": "xyito",
+  "displayName": "Easel",
+  "displayNameCN": "Easel 内容工坊",
+  "entry": "dist/index.html",
+  "quickDev": true,
+  "hasAd": false,
+  "icon": "🎨",
+  "inPluginPurchase": false,
+  "key": [
+    "easel",
+    "社媒",
+    "自媒体",
+    "内容创作",
+    "小红书",
+    "文案",
+    "账号画像",
+    "选题"
+  ],
+  "openInBrowser": false,
+  "native": {
+    "enabled": true
+  },
+  "packid": "otools-easel",
+  "screenshots": [],
+  "summary": "画像驱动的社媒内容工作台（移植自 ZJU-REAL/Easel）：账号画像、技能库与发现/策划/创作对话，一条工作流做到成稿。",
+  "uuid": "otools-easel",
+  "version": "0.1.0"
+}

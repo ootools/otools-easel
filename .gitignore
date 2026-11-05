@@ -1,0 +1,15 @@
+# 上游源码（按 upstream.pin 按需浅拉取，不入库）
+upstream/
+# 可选的中文字体仓库（按 cjk-fonts.pin 浅拉，不入库；中文 UI 完整性的来源）
+cjk-fonts/
+# 构建产物
+dist/
+shell/target/
+shell/Cargo.lock
+# 本地打包产物
+dist-pack/
+node_modules/
+*.log
+# native 动态库（宿主约定 lib/<平台>.so|dylib|dll，由 build-native.mjs / CI 产出）
+lib/
+native/target/

@@ -1,0 +1,93 @@
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font: 14px/1.65 system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: var(--el-bg-color);
+  color: var(--el-text-color-primary);
+}
+
+/* 对话与技能详情里的 markdown 渲染 */
+.md {
+  font-size: 14px;
+  line-height: 1.7;
+  word-break: break-word;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+  margin: 12px 0 8px;
+  line-height: 1.4;
+}
+.md h1 {
+  font-size: 18px;
+}
+.md h2 {
+  font-size: 16px;
+}
+.md h3 {
+  font-size: 15px;
+}
+.md p {
+  margin: 8px 0;
+}
+.md ul,
+.md ol {
+  margin: 8px 0;
+  padding-left: 22px;
+}
+.md code {
+  background: var(--el-fill-color);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.md pre {
+  background: var(--el-fill-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow: auto;
+}
+.md pre code {
+  background: transparent;
+  padding: 0;
+}
+.md table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  width: 100%;
+}
+.md th,
+.md td {
+  border: 1px solid var(--el-border-color);
+  padding: 5px 8px;
+  text-align: left;
+}
+.md blockquote {
+  margin: 8px 0;
+  padding: 2px 12px;
+  border-left: 3px solid var(--el-border-color);
+  color: var(--el-text-color-secondary);
+}
+.md a {
+  color: var(--el-color-primary);
+}
+.md img {
+  max-width: 100%;
+}
+
+/* 编辑画像的等宽文本域 */
+.mono-textarea textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.7;
+}
