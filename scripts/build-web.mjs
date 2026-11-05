@@ -54,7 +54,8 @@ const rustMode = fs.existsSync(shellCargo);
 
 // ----------------------------------------------------------------- web 模式
 if (!rustMode) {
-  const webDir = path.join(repoRoot, 'web');
+  // 忠实移植后 web/frontend 是上游 React 工程(npm ci + tsc -b && vite build → ../../dist)
+  const webDir = path.join(repoRoot, 'web', 'frontend');
   if (!fs.existsSync(webDir)) {
     console.error('web/ 目录不存在，也没有 shell/Cargo.toml。请至少提供其中一种前端来源。');
     process.exit(1);

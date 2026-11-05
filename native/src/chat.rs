@@ -19,9 +19,66 @@ static ABORTS: OnceLock<Mutex<HashMap<String, tokio::task::AbortHandle>>> = Once
 static SESSION_SEQ: AtomicU64 = AtomicU64::new(1);
 
 fn push_event(payload: Value) {
+    push_bridge_event(CHAT_EVENT, payload);
+}
+
+/// 通用桥事件(chat 流与任务事件流共用同一队列,宿主 poll_events 抽干)。
+pub(crate) fn push_bridge_event(topic: &str, payload: Value) {
     if let Ok(mut q) = EVENT_QUEUE.lock() {
-        q.push(json!({ "topic": CHAT_EVENT, "payload": payload }));
+        q.push(json!({ "topic": topic, "payload": payload }));
     }
+}
+
+// ── 问答题注册表(问答题桥:job 事件 → Web 回答 → codex 回包)───────────────
+
+struct PendingQuestion {
+    #[allow(dead_code)]
+    created_ms: u128,
+    responder: std::sync::mpsc::Sender<Value>,
+}
+
+static QUESTIONS: OnceLock<Mutex<HashMap<String, PendingQuestion>>> = OnceLock::new();
+
+fn questions() -> &'static Mutex<HashMap<String, PendingQuestion>> {
+    QUESTIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) fn register_question(question_id: &str, responder: std::sync::mpsc::Sender<Value>) {
+    if let Ok(mut guard) = questions().lock() {
+        guard.insert(
+            question_id.to_string(),
+            PendingQuestion { created_ms: now_millis_pub(), responder },
+        );
+    }
+}
+
+pub(crate) fn answer_question(question_id: &str, answers: Value) -> bool {
+    let pending = questions()
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.remove(question_id));
+    match pending {
+        Some(entry) => entry.responder.send(answers).is_ok(),
+        None => false,
+    }
+}
+
+pub(crate) fn questions_status(ids: &[String]) -> Value {
+    let mut result = serde_json::Map::new();
+    if let Ok(guard) = questions().lock() {
+        for id in ids {
+            let status = if guard.contains_key(id) { "pending" } else { "missing" };
+            result.insert(id.clone(), Value::String(status.to_string()));
+        }
+    }
+    Value::Object(result)
+}
+
+pub(crate) fn now_millis_pub() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0)
 }
 
 /// 宿主事件桥：抽干缓冲的 UI 事件。
@@ -100,7 +157,7 @@ fn emit(event: &StreamEvent) {
 
 // ── 线协议（对齐宿主 ot-ai-generate-text）───────────────────────────────────
 
-fn normalize_provider(provider: &str) -> String {
+pub(crate) fn normalize_provider(provider: &str) -> String {
     match provider.trim().to_ascii_lowercase().as_str() {
         "aliyun-bailian" | "dashscope" | "aliyun" | "bailian" => "openai".to_string(),
         other => other.to_string(),

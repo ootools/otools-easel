@@ -6,7 +6,19 @@
 //! `ot-plugin-ffi` 的守卫等价。本仓库故意不依赖 otools 单体仓里的 crate，
 //! 以便独立 CI 能直接 `cargo build`（同 free-model-otools 的做法）。
 
+pub mod agent;
 pub mod chat;
+pub mod chat_routes;
+pub mod environment;
+pub mod files;
+pub mod harness;
+pub mod process;
+pub mod settings;
+pub mod skills;
+pub mod router;
+pub mod storage;
+pub mod trends;
+pub mod workspace;
 
 use serde_json::{json, Value};
 use std::sync::OnceLock;
@@ -44,6 +56,15 @@ pub fn dispatch(method: &str, payload: Value) -> Value {
             chat::spawn_chat_stream(req);
             json!({ "ok": true, "data": { "started": true } })
         }
+        "api" => {
+            let method = payload.get("method").and_then(Value::as_str).unwrap_or("GET").to_string();
+            let path = payload.get("path").and_then(Value::as_str).unwrap_or("/").to_string();
+            let body = payload.get("body").cloned().unwrap_or(Value::Null);
+            match router::route(&method, &path, &body) {
+                Ok(data) => json!({ "ok": true, "data": data }),
+                Err(error) => json!({ "ok": false, "error": error.detail, "status": error.status }),
+            }
+        }
         "easel_chat_abort" => {
             let session_id = payload
                 .get("sessionId")
@@ -71,13 +92,17 @@ fn invoke_impl(input_ptr: *const u8, input_len: usize, output_len: *mut usize) -
     let input = unsafe { std::slice::from_raw_parts(input_ptr, input_len) };
     let parsed: Value = serde_json::from_slice(input)
         .unwrap_or_else(|error| json!({ "ok": false, "error": format!("非法输入：{error}") }));
-    let (method, payload) = match &parsed {
+    let (method, payload, plugin_dir) = match &parsed {
         Value::Object(map) => (
             map.get("method").and_then(Value::as_str).unwrap_or("").to_string(),
             map.get("payload").cloned().unwrap_or(Value::Null),
+            map.get("pluginDir").and_then(Value::as_str).unwrap_or("").to_string(),
         ),
-        _ => (String::new(), Value::Null),
+        _ => (String::new(), Value::Null, String::new()),
     };
+    if !plugin_dir.is_empty() {
+        workspace::set_plugin_dir(&plugin_dir);
+    }
     let response = dispatch(&method, payload);
     let mut output = serde_json::to_vec(&response)
         .unwrap_or_else(|_| br#"{"ok":false,"error":"serialize failed"}"#.to_vec());
