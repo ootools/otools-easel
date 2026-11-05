@@ -11,6 +11,7 @@
 use crate::chat_routes;
 use crate::environment;
 use crate::files;
+use crate::publishing;
 use crate::settings;
 use crate::trends;
 use crate::storage;
@@ -137,6 +138,14 @@ pub fn route(method: &str, path: &str, body: &Value) -> ApiResult {
         ("GET", ["api", "env", "tools"]) => environment::tools(query_map.get("refresh").map(|value| value == "1" || value == "true").unwrap_or(false)),
         ("POST", ["api", "env", "install"]) => environment::start_install(body),
         ("GET", ["api", "env", "job", id]) => environment::job_status(id),
+        ("GET", ["api", "artifacts", "archive"]) => publishing::artifact_archive(
+            query_map.get("path").map(String::as_str).unwrap_or(""),
+        ),
+        ("GET", ["api", "accounts"]) => Ok(publishing::accounts()),
+        ("GET", ["api", "login", platform]) => publishing::login_status(platform).map_err(|cause| ApiError::new(cause.status, cause.detail)),
+        ("DELETE", ["api", "session", key]) => publishing::delete_session(key).map_err(|cause| ApiError::new(cause.status, cause.detail)),
+        ("POST", ["api", "profile", "build"]) => publishing::profile_build(body).map_err(|cause| ApiError::new(cause.status, cause.detail)),
+        ("GET", ["api", "profile", "build", "status", name]) => Ok(publishing::profile_build_status(name)),
         ("GET", ["api", "settings", "bootstrap"]) => settings::bootstrap(),
         ("GET", ["api", "settings", "harness"]) => settings::harness_get(),
         ("POST", ["api", "settings", "harness"]) => settings::harness_save(body),

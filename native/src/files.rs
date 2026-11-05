@@ -25,7 +25,7 @@ fn io_error(cause: std::io::Error) -> ApiError {
     error(500, cause.to_string())
 }
 
-fn outputs_root() -> Result<PathBuf, ApiError> {
+pub fn outputs_root() -> Result<PathBuf, ApiError> {
     let root = crate::workspace::ensure_ready().map_err(|cause| error(500, cause))?.join("outputs");
     fs::create_dir_all(&root).map_err(io_error)?;
     root.canonicalize().map_err(io_error)
