@@ -11,6 +11,7 @@
 use crate::chat_routes;
 use crate::environment;
 use crate::files;
+use crate::orchestration;
 use crate::publishing;
 use crate::settings;
 use crate::trends;
@@ -142,7 +143,14 @@ pub fn route(method: &str, path: &str, body: &Value) -> ApiResult {
             query_map.get("path").map(String::as_str).unwrap_or(""),
         ),
         ("GET", ["api", "accounts"]) => Ok(publishing::accounts()),
-        ("GET", ["api", "login", platform]) => publishing::login_status(platform).map_err(|cause| ApiError::new(cause.status, cause.detail)),
+        ("POST", ["api", "login", platform]) => orchestration::login_start(platform, false).map_err(|cause| ApiError::new(cause.status, cause.detail)),
+        ("GET", ["api", "login", platform, "status"]) => orchestration::login_status_impl(platform).map_err(|cause| ApiError::new(cause.status, cause.detail)),
+        ("POST", ["api", "login", platform, "sms"]) => orchestration::login_sms(platform, body["code"].as_str().unwrap_or("")).map_err(|cause| ApiError::new(cause.status, cause.detail)),
+        ("POST", ["api", "publish", platform]) => orchestration::publish(platform, body).map_err(|cause| ApiError::new(cause.status, cause.detail)),
+        ("GET", ["api", "publish", platform, "status"]) => orchestration::publish_status(platform).map_err(|cause| ApiError::new(cause.status, cause.detail)),
+        ("POST", ["api", "publish", platform, "sms"]) => orchestration::publish_sms(platform, body["code"].as_str().unwrap_or("")).map_err(|cause| ApiError::new(cause.status, cause.detail)),
+        ("GET", ["api", "analytics", "platforms"]) => Ok(orchestration::analytics_platforms()),
+        ("GET", ["api", "analytics", platform]) => orchestration::analytics_fetch(platform).map_err(|cause| ApiError::new(cause.status, cause.detail)),
         ("DELETE", ["api", "session", key]) => publishing::delete_session(key).map_err(|cause| ApiError::new(cause.status, cause.detail)),
         ("POST", ["api", "profile", "build"]) => publishing::profile_build(body).map_err(|cause| ApiError::new(cause.status, cause.detail)),
         ("GET", ["api", "profile", "build", "status", name]) => Ok(publishing::profile_build_status(name)),

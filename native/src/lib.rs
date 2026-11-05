@@ -13,6 +13,7 @@ pub mod environment;
 pub mod files;
 pub mod harness;
 pub mod process;
+pub mod orchestration;
 pub mod publishing;
 pub mod settings;
 pub mod skills;
