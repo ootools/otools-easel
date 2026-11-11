@@ -110,7 +110,7 @@ function QuestionCard({ question, onAnswered, onClosed }: { question: ChatQuesti
               网关截止时间：{new Date(question.expiresAtMs).toLocaleString()} · 剩余约 {Math.max(0, Math.ceil((question.expiresAtMs - now) / 60000))} 分钟（可能提前关闭）
             </div>}
           {items.map((it, idx) => {
-            const options: { label: string; description?: string }[] = it.options || [];
+            const options: { id?:string; label: string; description?: string }[] = it.options || [];
             const vals = valsOf(it);
             const ctl = showCustom[it.questionId];
             const cvals = customVals[it.questionId] || [];
@@ -125,9 +125,9 @@ function QuestionCard({ question, onAnswered, onClosed }: { question: ChatQuesti
                 <div className="question-card__options">
                   {options.map((opt) => (
                     <button key={opt.label}
-                      className={`question-card__option${vals.includes(opt.label) ? ' question-card__option--selected' : ''}`}
+                      className={`question-card__option${vals.includes(opt.id || opt.label) ? ' question-card__option--selected' : ''}`}
                       disabled={locked}
-                      onClick={() => pick(it, opt.label)}>
+                      onClick={() => pick(it, opt.id || opt.label)}>
                       <strong>{opt.label}</strong>
                       {opt.description && <span>{opt.description}</span>}
                     </button>
@@ -142,10 +142,10 @@ function QuestionCard({ question, onAnswered, onClosed }: { question: ChatQuesti
                       <span>自定义 · 点击移除</span>
                     </button>
                   ))}
-                  <button className="question-card__other" disabled={locked}
+                  {it.allowCustom !== false && <button className="question-card__other" disabled={locked}
                     onClick={() => setShowCustom((s) => ({ ...s, [it.questionId]: !s[it.questionId] }))}>
                     {ctl ? '收起自定义输入' : '自行输入…'}
-                  </button>
+                  </button>}
                 </div>
                 {ctl && (
                   <div className="question-card__custom">

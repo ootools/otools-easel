@@ -32,7 +32,7 @@ async function fetchWithRetry<T>(fn: () => Promise<T>, tries = 4, timeoutMs = 18
 export default function SettingsPanel({ onClose, banner = '' }: Props) {
   const [sec, setSec] = useState<Sec>('model');
   const [chan, setChan] = useState<Chan>('chat');
-  const [, setSelectedHarness] = useState('');
+  const [selectedHarness, setSelectedHarness] = useState('');
   const [tools, setTools] = useState<EnvTool[]>([]);
   const [python, setPython] = useState('');
   const [envLoading, setEnvLoading] = useState(true);
@@ -127,7 +127,7 @@ export default function SettingsPanel({ onClose, banner = '' }: Props) {
         <div className="settings-main">
           {sec === 'model' && <section className="st-sec active">
             <div className="tabbar">{CHANNELS.map(channel => <button key={channel.id} className={`tab${chan === channel.id ? ' active' : ''}`} onClick={() => setChan(channel.id)}><span className="cdot" />{channel.label}</button>)}</div>
-            {chan === 'chat' && <><HarnessSettings onChange={setSelectedHarness} onSelect={setSelectedHarness} /><HostAiModelSettings /></>}
+            {chan === 'chat' && <><HarnessSettings onChange={setSelectedHarness} onSelect={setSelectedHarness} /><HostAiModelSettings runtime={selectedHarness || 'api'} /></>}
             {chan === 'image' && <MediaModelControls channel="images" />}
             {chan === 'video' && <MediaModelControls channel="video" />}
             {chan === 'speech' && <MediaModelControls channel="tts" />}

@@ -6,8 +6,6 @@
 //! `ot-plugin-ffi` 的守卫等价。本仓库故意不依赖 otools 单体仓里的 crate，
 //! 以便独立 CI 能直接 `cargo build`（同 free-model-otools 的做法）。
 
-pub mod agent;
-pub mod chat;
 pub mod chat_routes;
 pub mod environment;
 pub mod files;
@@ -47,17 +45,8 @@ pub fn dispatch(method: &str, payload: Value) -> Value {
 
     match method {
         "easel_ping" => ok!(json!({ "pong": true })),
-        "easel_next_session" => ok!(json!({ "sessionId": chat::next_session_id() })),
-        "easel_chat_stream" => {
-            let req: chat::ChatStreamRequest = match serde_json::from_value(payload) {
-                Ok(req) => req,
-                Err(error) => {
-                    return json!({ "ok": false, "error": format!("解析请求失败：{error}") });
-                }
-            };
-            chat::spawn_chat_stream(req);
-            json!({ "ok": true, "data": { "started": true } })
-        }
+        "easel_next_session" => ok!(json!({ "sessionId": uuid::Uuid::new_v4().to_string() })),
+        "easel_chat_stream" | "easel_chat_abort" => json!({"ok":false,"status":426,"error":"请更新 Otools；使用宿主 AI / Agent 服务"}),
         "api" => {
             let method = payload.get("method").and_then(Value::as_str).unwrap_or("GET").to_string();
             let path = payload.get("path").and_then(Value::as_str).unwrap_or("/").to_string();
@@ -67,16 +56,7 @@ pub fn dispatch(method: &str, payload: Value) -> Value {
                 Err(error) => json!({ "ok": false, "error": error.detail, "status": error.status }),
             }
         }
-        "easel_chat_abort" => {
-            let session_id = payload
-                .get("sessionId")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            chat::abort_stream(&session_id);
-            ok!(json!({ "aborted": true }))
-        }
-        "poll_events" => ok!(chat::poll_events()),
+        "poll_events" => ok!(json!([])),
         "__otools_shutdown__" => {
             // 运行时随宿主进程退出自然回收；这里只清空中止表。
             ok!(json!({ "stopped": true }))
@@ -161,7 +141,7 @@ mod tests {
 
     #[test]
     fn dispatch_registers_all_methods() {
-        for method in ["easel_ping", "easel_next_session", "easel_chat_abort", "poll_events"] {
+        for method in ["easel_ping", "easel_next_session", "poll_events"] {
             let response = dispatch(method, Value::Null);
             assert_eq!(
                 response.get("ok").and_then(Value::as_bool),
@@ -176,7 +156,7 @@ mod tests {
         let response = dispatch("easel_chat_stream", json!({ "sessionId": "x" }));
         assert_eq!(response.get("ok").and_then(Value::as_bool), Some(false));
         let error = response.get("error").and_then(Value::as_str).unwrap_or_default();
-        assert!(error.contains("解析请求失败"));
+        assert!(error.contains("宿主"));
     }
 
     #[test]

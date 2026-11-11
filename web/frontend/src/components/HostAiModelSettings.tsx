@@ -2,10 +2,21 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchHostModelCatalog, saveHostModelSelection, subscribeHostAiSelection } from '../lib/hostAi';
 import type { HostAiModelCatalog, HostAiSelection } from '../lib/hostAi';
 import SettingsSelect from './SettingsSelect';
+import { hostAgentApi } from '../lib/hostAgent';
 
 const EMPTY_SELECTION: HostAiSelection = { model: null, reasoningEffort: null };
 
-export default function HostAiModelSettings() { return <HostModelSettings/>; }
+export default function HostAiModelSettings({runtime='api'}:{runtime?:string}) {
+  const [host,setHost]=useState(runtime==='api');
+  const [note,setNote]=useState('读取执行引擎配置…');
+  useEffect(()=>{
+    let active=true;if(runtime==='api'){setHost(true);return;}
+    setHost(false);
+    try {void hostAgentApi().providers().then(providers=>{if(!active)return;const p=providers.find(p=>p.id===runtime);setHost(p?.adapter==='codex' && p.configuration!=='native');setNote(p?.adapter==='acp'?'ACP 使用引擎会话配置，请在对话中查看。':'此 Agent 使用原生模型配置，由 Otools Agent 管理维护。');}).catch(error=>{if(active)setNote(String(error));});}catch(error){setNote(String(error));}
+    return ()=>{active=false;};
+  },[runtime]);
+  return host?<HostModelSettings/>:<p className="desc" role="status">{note}</p>;
+}
 function HostModelSettings() {
   const [catalog, setCatalog] = useState<HostAiModelCatalog | null>(null);
   const [selection, setSelection] = useState<HostAiSelection>(EMPTY_SELECTION);

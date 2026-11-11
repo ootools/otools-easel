@@ -69,6 +69,23 @@ export function savePublishDraft(d: PublishDraft): void {
   try { localStorage.setItem(PUBLISH_KEY, JSON.stringify(d)); } catch { /* quota */ }
 }
 
+export interface HostTask {
+  turnId:string; sessionId:string; hostSessionId:string; runId:string; after:number;
+  text:string; thinking:string; questions:ChatQuestion[]; permissions:string[];
+  profileName?:string;
+  status:'running'|'completed'|'cancelled'|'failed'|'interrupted'; error?:string; created:number;
+}
+const HOST_TASKS_KEY='easel_host_tasks';
+export function loadHostTasks():Record<string,HostTask> {
+  try {const tasks=JSON.parse(localStorage.getItem(HOST_TASKS_KEY) || '{}');return tasks && typeof tasks==='object' && !Array.isArray(tasks)?tasks:{};} catch {return {};}
+}
+export function saveHostTask(task:HostTask):void {
+  const tasks=loadHostTasks();tasks[task.turnId]=task;
+  const completed=Object.values(tasks).filter(t=>t.status!=='running').sort((a,b)=>b.created-a.created);
+  for(const old of completed.slice(30)) delete tasks[old.turnId];
+  localStorage.setItem(HOST_TASKS_KEY,JSON.stringify(tasks));
+}
+
 const STORAGE_KEY = 'easel_sessions';
 const ACTIVE_KEY = 'easel_active_session';
 const MAX_SESSIONS = 100;

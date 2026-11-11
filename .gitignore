@@ -11,5 +11,5 @@ dist-pack/
 node_modules/
 *.log
 # native 动态库（宿主约定 lib/<平台>.so|dylib|dll，由 build-native.mjs / CI 产出）
-lib/
+/lib/
 native/target/

@@ -1,3 +1,4 @@
+import type { TaskController } from '../lib/hostAgent';
 import { useEffect, useRef, useState } from 'react';
 import { createSchedule, executeSkill, exportManualPackage, fetchOutputs, runAgent, streamChat } from '../lib/api';
 import { MediaImage, downloadMedia } from './Media';
@@ -53,7 +54,7 @@ export default function ManualPublishPage({ persona }: { persona: string }) {
   const ctl = useRef<AbortController | null>(null);
 
   useEffect(() => { savePublishDraft({ title, body, platforms, overrides, tags }); }, [title, body, platforms, overrides, tags]);
-  useEffect(() => () => ctl.current?.abort(), []);
+  useEffect(() => () => (ctl.current as TaskController | null)?.detach?.(), []);
   useEffect(() => {
     fetchOutputs().then((roots) => {
       const files: OutputFile[] = [];

@@ -1,8 +1,10 @@
 // Shared CMD transport for desktop plugins and the OTools remote runtime.
 import type { HostAiApi } from './hostAi.ts';
+import type { AgentApi } from './hostAgent.ts';
 
 export interface HostBridge {
   ai?: HostAiApi;
+  agent?: AgentApi;
   invokeNative?: (method: string, payload?: unknown) => Promise<unknown>;
   invokeNativeRaw?: (method: string, payload?: unknown) => Promise<unknown>;
   listenNative?: (handler: (event: unknown) => void) => Promise<() => void | Promise<void>> | (() => void | Promise<void>);
@@ -90,7 +92,8 @@ export async function nativeRequest<T = unknown>(path: string, options?: Request
   if (!bridge?.invokeNativeRaw && !bridge?.invokeNative) throw new Error('OTools 宿主桥不可用:请在 OTools 内打开本插件');
   const body = await toBridgeBody(options?.body);
   throwIfAborted(options?.signal);
-  const payload = { method: (options?.method ?? 'GET').toUpperCase(), path, body };
+  const method = (options?.method ?? 'GET').toUpperCase();
+  const payload = { method, path, body };
   const raw = typeof bridge.invokeNativeRaw === 'function';
   const pending = raw ? bridge.invokeNativeRaw!('api', payload) : bridge.invokeNative!('api', payload);
   return responseData<T>(await abortable(pending, options?.signal), raw);

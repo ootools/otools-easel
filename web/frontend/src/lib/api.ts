@@ -1,6 +1,9 @@
-import { nativeRequest as request, otoolsBridge } from './nativeBridge.ts';
-import { uploadViaChunks } from './uploads.ts';
+import { nativeRequest as request } from './nativeBridge.ts';
 import { hostMediaApi, type MediaChannel } from './hostMedia.ts';
+import { hostAiApi } from './hostAi.ts';
+import { hostAgentApi, taskController, executeHostTask, startAgentTask, prepareTask, applyAgentPage, cancelHostSession, respondHostQuestion, hostQuestionStatuses, type PreparationInput } from './hostAgent.ts';
+import { loadHostTasks, loadSessions, saveHostTask } from './store.ts';
+import { uploadViaChunks } from './uploads.ts';
 
 export interface StatusResponse {
   gateway: boolean;
@@ -19,26 +22,19 @@ export interface HarnessSettingsResponse {
   agents: { id: string; label: string; protocol: string; installed: boolean; install_hint: string }[];
 }
 
-export function fetchHarnessSettings(): Promise<HarnessSettingsResponse> {
-  return request('/api/settings/harness');
+export async function fetchHarnessSettings(): Promise<HarnessSettingsResponse> {
+  const settings=await request<HarnessSettingsResponse>('/api/settings/harness');
+  const providers=await hostAgentApi().providers();
+  return {...settings,agents:[{id:'api',label:'仅聊天模式',protocol:'Otools AI',installed:true,install_hint:''},...providers.map(provider=>({id:provider.id,label:provider.name,protocol:provider.adapter,installed:provider.available,install_hint:'在 Otools Agent 管理中安装或配置'}))]};
 }
 
-export interface HarnessModel {
-  id: string;
-  label: string;
-  default: boolean;
-}
-
-export function fetchHarnessModels(runtime: string): Promise<{ runtime: string; models: HarnessModel[] }> {
-  return request(`/api/settings/harness/models/${encodeURIComponent(runtime)}`, { method: 'POST' });
-}
-
-export function saveHarnessSettings(runtime: string, model: string, sandbox: string, codexAutoApprove?: boolean): Promise<HarnessSettingsResponse> {
-  return request('/api/settings/harness', {
+export async function saveHarnessSettings(runtime: string, model: string, sandbox: string, codexAutoApprove?: boolean): Promise<HarnessSettingsResponse> {
+  await request('/api/settings/harness', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ runtime, model, sandbox, codex_auto_approve: codexAutoApprove }),
   });
+  return fetchHarnessSettings();
 }
 
 export interface PersonaItem {
@@ -142,11 +138,14 @@ export interface ProfileBuildResponse {
   async?: boolean;
   status?: string;
   log?: string;
+  turnId?:string;
+  preparation?:PreparationInput;
 }
 
 export interface ProfileBuildStatus {
-  state: 'running' | 'done' | 'failed' | 'unknown';
+  state: 'pending' | 'running' | 'done' | 'failed' | 'unknown';
   log: string;
+  runId?:string; sessionId?:string; turnId?:string;
 }
 
 export interface BootstrapStatus {
@@ -160,16 +159,20 @@ export interface BootstrapStatus {
   installWarnings: unknown[];
 }
 
-export function fetchSettingsBootstrap(): Promise<BootstrapStatus> {
-  return request('/api/settings/bootstrap');
+export async function fetchSettingsBootstrap(): Promise<BootstrapStatus> {
+  const boot=await request<BootstrapStatus>('/api/settings/bootstrap');
+  const configured=boot.runtime==='api' ? (await hostAiApi().capabilities()).configured : (await hostAgentApi().providers()).some(provider=>provider.id===boot.runtime && provider.available);
+  return {...boot,modelConfigured:configured,routeOk:configured,gatewayUp:configured};
 }
 
 export function fetchUploadLimits(): Promise<{ ok: boolean; max_mb: number }> {
   return request('/api/upload/limits');
 }
 
-export function fetchStatus(): Promise<StatusResponse> {
-  return request<StatusResponse>('/api/status');
+export async function fetchStatus(): Promise<StatusResponse> {
+  const status=await request<StatusResponse>('/api/status');
+  try {status.gateway=(await fetchSettingsBootstrap()).modelConfigured;} catch {status.gateway=false;}
+  return status;
 }
 
 export function fetchPersonas(): Promise<PersonaItem[]> {
@@ -327,35 +330,56 @@ export function saveEnv(updates: Record<string, string>): Promise<{ ok: boolean;
   });
 }
 
-export function executeSkill(skill: string, input: string, persona?: string): Promise<SkillResponse> {
-  return request<SkillResponse>('/api/skill', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ skill, input, persona: persona || undefined }),
-  });
+export async function executeSkill(skill: string, input: string, persona?: string): Promise<SkillResponse> {
+  const sessionId=`skill-${crypto.randomUUID()}`;
+  const response=await executeHostTask({message:input.trim() || `请执行技能 ${skill}`,skillName:skill,persona,sessionId,requireAgent:true},crypto.randomUUID(),{onToken:()=>{}},taskController());
+  return {response};
 }
 
-/** 一次性 agent 任务（返回整段 markdown）——用于一稿多改 / 爆款拆解 / 发布预检等工具型调用。 */
-export function runAgent(message: string, persona?: string): Promise<{ response: string }> {
-  return request('/api/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, persona: persona || undefined }),
-  });
+export async function runAgent(message: string, persona?: string): Promise<{response:string}> {
+  const response=await executeHostTask({message,persona,sessionId:`tool-${crypto.randomUUID()}`,requireAgent:true},crypto.randomUUID(),{onToken:()=>{}},taskController());
+  return {response};
 }
 
-/** 从表单构建画像（首次引导）。后端写基线 + agent 分析社媒链接增强。 */
-export function buildProfile(name: string, form: Record<string, unknown>): Promise<ProfileBuildResponse> {
-  return request<ProfileBuildResponse>('/api/profile/build', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, form }),
-  });
+export async function buildProfile(name:string,form:Record<string,unknown>):Promise<ProfileBuildResponse> {
+  const built=await request<ProfileBuildResponse>('/api/profile/build',{method:'POST',body:JSON.stringify({name,form})});
+  if(!built.preparation || !built.turnId) throw new Error('请更新 Easel 原生组件以启用宿主画像增强');
+  let hostStarted=false;
+  try {
+    const prepared=await prepareTask(built.preparation);
+    if(prepared.runtime==='api') throw new Error('基线画像已创建；增强画像需要在设置中选择 Agent');
+    const task=await startAgentTask(built.preparation,prepared,built.turnId,taskController());
+    task.profileName=name;saveHostTask(task);hostStarted=true;
+    await request(`/api/profile/build/status/${encodeURIComponent(name)}`,{method:'PUT',body:JSON.stringify({runId:task.runId,sessionId:task.hostSessionId,hostStatus:'running'})});
+    return {...built,status:'running'};
+  } catch(error) {
+    const log=error instanceof Error?error.message:String(error);
+    if(hostStarted)return {...built,status:'running',log};
+    await request(`/api/profile/build/status/${encodeURIComponent(name)}`,{method:'PUT',body:JSON.stringify({hostStatus:'failed',log})});
+    return {...built,status:'failed',log};
+  }
 }
 
-/** 轮询画像 AI 增强进度（构建异步化后用）。 */
-export function profileBuildStatus(name: string): Promise<ProfileBuildStatus> {
-  return request<ProfileBuildStatus>(`/api/profile/build/status/${encodeURIComponent(name)}`);
+const profileReads=new Map<string,Promise<ProfileBuildStatus>>();
+export function profileBuildStatus(name:string):Promise<ProfileBuildStatus> {
+  const current=profileReads.get(name);if(current)return current;
+  const pending=readProfileBuildStatus(name).finally(()=>profileReads.delete(name));profileReads.set(name,pending);return pending;
+}
+async function readProfileBuildStatus(name:string):Promise<ProfileBuildStatus> {
+  const path=`/api/profile/build/status/${encodeURIComponent(name)}`;
+  const status=await request<ProfileBuildStatus>(path);
+  if(status.state==='done' || status.state==='failed') return status;
+  // The native linkage is authoritative across page closes. The local task record
+  // also recovers a close between host start and native linkage persistence.
+  let task=status.turnId?loadHostTasks()[status.turnId]:undefined;
+  const id=status.runId || task?.runId;
+  if(!id) return status;
+  if(!status.runId) await request(path,{method:'PUT',body:JSON.stringify({runId:id,sessionId:task?.hostSessionId,hostStatus:'running'})});
+  task ??= {turnId:status.turnId || id,sessionId:`profile-${name}`,hostSessionId:status.sessionId || '',runId:id,after:0,text:'',thinking:'',questions:[],permissions:[],status:'running',created:Date.now(),profileName:name};
+  const page=await hostAgentApi().read({id,after:task.after});
+  await applyAgentPage(task,page,{onToken:()=>{}});
+  if(page.done) return request(path,{method:'PUT',body:JSON.stringify({runId:id,hostStatus:page.status,log:page.status==='completed'?'AI 增强完成':`增强未完成 (${page.status})；基线画像仍可用`})});
+  return {...status,state:'running',runId:id};
 }
 
 export function fetchOutputs(): Promise<OutputNode[]> {
@@ -383,15 +407,17 @@ export function deleteOutput(path: string): Promise<{ ok: boolean; deleted: stri
 export interface UploadedFile { id: string; name: string; path: string; }
 
 /** OpenClaw ask_user 问答题（SSE question 事件 payload）。 */
-export interface ChatQuestionOption { label: string; description?: string; }
+export interface ChatQuestionOption { id?:string; label: string; description?: string; }
 export interface ChatQuestionItem {
   questionId: string;
   header?: string;
   question: string;
   options?: ChatQuestionOption[];
   multiSelect?: boolean;
+  allowCustom?:boolean;
 }
 export interface ChatQuestion {
+  runId?:string;
   id: string;              // gateway question record id (ask_...)
   questions: ChatQuestionItem[];
   expiresAtMs?: number;
@@ -401,25 +427,12 @@ export interface ChatQuestionClosed { id: string; status: string; }
 export async function answerQuestion(
   payload: { questionId: string; answers: Record<string, string[]>; resolvedBy?: string },
 ): Promise<{ ok: boolean; error?: string; status?: string; expired?: boolean }> {
-  const data = await request<{ ok?: boolean; error?: string; status?: string; expired?: boolean }>('/api/chat/question/answer', {
-    method: 'POST', body: JSON.stringify(payload),
-  }).catch(() => ({}) as { ok?: boolean; error?: string; status?: string; expired?: boolean });
-  return { ok: data.ok === true, error: data.error, status: data.status, expired: data.expired };
+  try {await respondHostQuestion(payload.questionId,payload.answers);return {ok:true,status:'answered'};}
+  catch(error) {return {ok:false,error:error instanceof Error?error.message:String(error)};}
 }
 
-/** 批量查 question 状态：过滤重放中已解决/已过期的旧题。 */
-export async function questionStatus(
-  questionIds: string[],
-): Promise<Record<string, { status: string }>> {
-  if (!questionIds.length) return {};
-  try {
-    const data = await request<{ ok?: boolean; questions?: Record<string, { status: string }> }>('/api/chat/question/status', {
-      method: 'POST', body: JSON.stringify({ questionIds }),
-    }).catch(() => ({}) as { ok?: boolean; questions?: Record<string, { status: string }> });
-    return data.questions || {};
-  } catch {
-    return {};
-  }
+export async function questionStatus(questionIds:string[]):Promise<Record<string,{status:string}>> {
+  return hostQuestionStatuses(questionIds);
 }
 /** 上传素材到当前会话的隔离 inbox（分块 CMD 通道），返回后端可校验的附件引用。 */
 export function uploadFiles(files: File[], sessionId: string): Promise<UploadedFile[]> {
@@ -635,165 +648,35 @@ export function submitLoginSms(platform: string, code: string): Promise<{ ok: bo
 }
 
 /** 用户显式停止：终止后端正在跑的对话 agent，释放会话锁，令下一句能立刻发。 */
-export function stopChat(sessionId: string): Promise<{ stopped: boolean }> {
-  return request('/api/chat/stop', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId }),
-  });
+export async function stopChat(sessionId:string):Promise<{stopped:boolean}> {
+  return {stopped:await cancelHostSession(sessionId)};
 }
 
 export function streamChat(
-  message: string,
-  persona: string | undefined,
-  sessionId: string,
-  onToken: (chunk: string) => void,
-  onDone: (sessionKey?: string) => void,
-  onError: (err: Error) => void,
-  onThinking?: (chunk: string) => void,
-  onActivity?: (status: string) => void,
-  onInterrupted?: () => void,
-  turnId: string | undefined = undefined,
-  resumeOnly = false,
-  onRecoveryUnavailable?: () => void,
-  attachments: UploadedFile[] = [],
-  onQuestion?: (q: ChatQuestion) => void,
-  onHeartbeat?: (note: string) => void,
-  onQuestionClosed?: (q: ChatQuestionClosed) => void,
-): AbortController {
-  const controller = new AbortController();
-  let lastEventId = 0;
-
-  // 事件统一经 native 事件桥(easel-job-stream topic)+ 持久化任务重放:
-  // 语义与上游 SSE 一致(id/event/data 三元组、after= 续传、130 分钟预算)。
-  type JobEvent = { id: number; event: string; data: string };
-
-  const handleEvent = (currentId: number, currentEvent: string, data: string): boolean => {
-    if (!currentEvent || !data) return false;
-    if (currentId > lastEventId) lastEventId = currentId;
-    if (currentEvent === 'token') {
-      try { onToken(JSON.parse(data) as string); } catch { onToken(data); }
-    } else if (currentEvent === 'thinking' && onThinking) {
-      try { onThinking(JSON.parse(data) as string); } catch { onThinking(data); }
-    } else if (currentEvent === 'activity' && onActivity) {
-      try { onActivity(JSON.parse(data) as string); } catch { onActivity(data); }
-    } else if (currentEvent === 'question' && onQuestion) {
-      // 防御:question 负载必须是对象且带 questions 数组(旧后端重放曾双层序列化)。
-      try {
-        const q = JSON.parse(data) as ChatQuestion;
-        if (q && typeof q === 'object' && Array.isArray(q.questions)) onQuestion(q);
-      } catch { /* 解析失败忽略 */ }
-    } else if (currentEvent === 'question_closed' && onQuestionClosed) {
-      try {
-        const closed = JSON.parse(data) as ChatQuestionClosed;
-        if (closed && typeof closed.id === 'string' && typeof closed.status === 'string') onQuestionClosed(closed);
-      } catch {}
-    } else if (currentEvent === 'heartbeat') {
-      if (onHeartbeat) { try { onHeartbeat(JSON.parse(data) as string); } catch { onHeartbeat(data); } }
-    } else if (currentEvent === 'error') {
-      let msg = '执行失败';
-      try { msg = JSON.parse(data) as string; } catch { msg = data; }
-      onError(new Error(msg));
-      return true;
-    } else if (currentEvent === 'done') {
-      try { onDone((JSON.parse(data) as { sessionKey?: string }).sessionKey); } catch { onDone(); }
-      return true;
-    }
-    return false;
-  };
-
-  const applyEvents = (events: JobEvent[] | undefined): boolean => {
-    if (!events?.length) return false;
-    for (const item of events) {
-      if (handleEvent(item.id, item.event, item.data)) return true;
-    }
-    return false;
-  };
-
-  void (async () => {
-    const started = Date.now();
-    let first = !resumeOnly;
-    let unlisten: (() => void) | null = null;
-
-    const finish = () => {
-      if (unlisten) {
-        const off = unlisten;
-        unlisten = null;
-        void off();
-      }
-    };
-
-    try {
-      const bridge = otoolsBridge();
-      if (bridge?.listenNative) {
-        unlisten = await bridge.listenNative((event: unknown) => {
-          if (controller.signal.aborted) return;
-          const envelope = (event as { payload?: { topic?: string; payload?: unknown } })?.payload;
-          if (!envelope || envelope.topic !== 'easel-job-stream') return;
-          const payload = envelope.payload as JobEvent & { turnId?: string } | null;
-          if (!payload || typeof payload.event !== 'string') return;
-          // 关联当前任务:turnId 已知且事件带不同 turnId 时忽略。
-          if (turnId && payload.turnId && payload.turnId !== turnId) return;
-          if (handleEvent(payload.id, payload.event, payload.data)) {
-            finish();
-            controller.abort();
-          }
-        });
-      }
-    } catch {
-      /* 事件桥缺失(远程模式桥未就绪等)时仅靠重放 */
-    }
-
-    while (!controller.signal.aborted) {
-      try {
-        if (first) {
-          const result = await request<{ turn_id?: string; events?: JobEvent[] }>('/api/chat/stream', {
-            method: 'POST',
-            body: JSON.stringify({ message, persona: persona || undefined, sessionId, turnId, attachments }),
-          });
-          if (result?.turn_id && !turnId) turnId = result.turn_id;
-          if (applyEvents(result?.events)) { finish(); return; }
-        } else {
-          // 断线续传:重放 after 之后的持久化事件(任务记录不存在 → 终结)。
-          const replay = await request<{ events?: JobEvent[] }>(`/api/chat/jobs/${encodeURIComponent(turnId || '')}/events?after=${lastEventId}`);
-          if (applyEvents(replay?.events)) { finish(); return; }
-        }
-      } catch (err: unknown) {
-        if (err instanceof Error && err.name === 'AbortError') { finish(); return; }
-        if (!first) {
-          // jobs 重放 404 = 任务记录不存在(后端重启丢日志/首发 5xx)。
-          if (onRecoveryUnavailable) onRecoveryUnavailable();
-          else onError(new Error('任务记录不存在或已失效，无法续接；请重新发送'));
-          finish();
-          return;
-        }
-        const status = (err as Error & { status?: number })?.status;
-        if (status && status >= 400 && status < 500) {
-          onError(err instanceof Error ? err : new Error('请求失败'));
-          finish();
-          return;
-        }
-      }
-      first = false;
-      // 后端单轮可能等待会话锁 5 分钟、执行 2 小时:同一端到端预算内持续重连。
-      if (!turnId || Date.now() - started >= 130 * 60 * 1000) {
-        onError(new Error('连接中断，自动重连超时'));
-        finish();
-        return;
-      }
-      onInterrupted?.();
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-    finish();
-  })();
-
+  message:string,persona:string|undefined,sessionId:string,
+  onToken:(chunk:string)=>void,onDone:(sessionKey?:string)=>void,onError:(err:Error)=>void,
+  onThinking?:(chunk:string)=>void,onActivity?:(status:string)=>void,_onInterrupted?:()=>void,
+  turnId:string=crypto.randomUUID(),resumeOnly=false,onRecoveryUnavailable?:()=>void,
+  attachments:UploadedFile[]=[],onQuestion?:(q:ChatQuestion)=>void,onHeartbeat?:(note:string)=>void,
+  onQuestionClosed?:(q:ChatQuestionClosed)=>void,
+):AbortController {
+  const controller=taskController();
+  const history=loadSessions().find(session=>session.id===sessionId)?.messages || [];
+  const messages=history.slice(0,history.at(-1)?.role==='user'?-1:undefined).map(({role,content})=>({role,content}));
+  void executeHostTask({message,persona,sessionId,attachments,messages},turnId,{onToken,onThinking,onActivity,onQuestion,onHeartbeat,onQuestionClosed},controller,resumeOnly)
+    .then(()=>{if(!controller.signal.aborted)onDone(sessionId);})
+    .catch(error=>{
+      if(controller.signal.aborted)return;
+      if(resumeOnly && !loadHostTasks()[turnId] && onRecoveryUnavailable)onRecoveryUnavailable();
+      else onError(error instanceof Error?error:new Error(String(error)));
+    });
   return controller;
 }
 
-/** 取某会话最近一轮的完整结果（SSE 断线后据此取回）。 */
-export function fetchLastTurn(sessionId: string, turnId?: string): Promise<{ status: string; text: string; turn_id?: string }> {
-  const query = turnId ? `?turn_id=${encodeURIComponent(turnId)}` : '';
-  return request(`/api/chat/last/${encodeURIComponent(sessionId)}${query}`);
+export async function fetchLastTurn(sessionId:string,turnId?:string):Promise<{status:string;text:string;turn_id?:string}> {
+  const task=turnId?loadHostTasks()[turnId]:Object.values(loadHostTasks()).filter(task=>task.sessionId===sessionId).sort((a,b)=>b.created-a.created)[0];
+  if(!task)throw new Error('任务记录不存在');
+  return {status:task.status==='completed'?'done':task.status,text:task.text,turn_id:task.turnId};
 }
 
 // ═══ 设置面板 · 环境安装（install_tool 引擎桥） ═══
@@ -923,13 +806,6 @@ export function fetchModelChannels(runtime?: string): Promise<ModelChannelsRespo
   return request(`/api/settings/models${runtime ? `?runtime=${encodeURIComponent(runtime)}` : ''}`);
 }
 
-export function saveChatTransport(transport: 'api' | 'openclaw'): Promise<ModelChannelsResponse> {
-  return request('/api/settings/chat/transport', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ transport }),
-  });
-}
-
 // ── 网络代理设置（EASEL_PROXY；更多设置页） ─────────────────────────
 
 export interface ProxySettings {
@@ -957,44 +833,6 @@ export function runChannelSelftest(channel: string): Promise<{ channel: string; 
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ channel }),
-  });
-}
-
-export interface LocalAgentModel {
-  id: string;
-  name: string;
-  contextWindow?: number | null;
-}
-
-export interface LocalAgentInfo {
-  id: string;
-  label: string;
-  installed: boolean;
-  command: string;
-  path: string;
-  openclawProvider: string | null;
-  configProvider?: string | null;
-  supported: boolean;
-  configured: boolean;
-  usableWithoutKey: boolean;
-  loginHint: string;
-  models?: LocalAgentModel[];
-}
-
-export function fetchLocalAgents(): Promise<{
-  agents: LocalAgentInfo[];
-  installedCount: number;
-  usableWithoutKeyCount: number;
-  usableWithoutKey: string[];
-}> {
-  return request('/api/settings/local-agents');
-}
-
-export function enableLocalAgent(id: string, model = ''): Promise<{ ok: boolean; note: string; agent: LocalAgentInfo }> {
-  return request('/api/settings/local-agents/enable', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, model }),
   });
 }
 

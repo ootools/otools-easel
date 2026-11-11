@@ -7,8 +7,8 @@
  * 扁平结构（plugin.json 在 ZIP 根）与「单一顶层目录」两种布局宿主都认，
  * 这里用扁平。
  *
- * 本插件是**纯前端**插件（没有 native cdylib），所以：
- *   - 不校验 lib/；
+ * 本插件包含前端与 native cdylib：
+ *   - 收集当前已构建的平台 lib/；
  *   - 用 `productionManifest` 去掉开发期配置（devUrl / quickDev），
  *     否则 OTools 的正式包校验会以「正式包不能启用开发模式」拒收。
  *
@@ -121,7 +121,7 @@ export function productionManifest(manifest, version = '') {
   const result = { ...manifest, version: next };
   delete result.devUrl;
   delete result.quickDev;
-  // 本插件没有 native；若将来加了，autoReload 是开发期热重载开关，同样要关掉。
+  // autoReload 是原生库开发期热重载开关，正式包关闭。
   if (result.native && typeof result.native === 'object') {
     result.native = { ...result.native, autoReload: false };
   }
@@ -145,7 +145,12 @@ function main() {
     if (fs.existsSync(full)) entries.push({ name: logo, data: fs.readFileSync(full) });
   }
 
-  // 3) 前端产物 dist/（本插件没有 lib/：纯前端，无 native cdylib）
+  for (const name of ['LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md', 'README.md']) {
+    const file = path.join(root, name);
+    if (fs.existsSync(file)) entries.push({ name, data: fs.readFileSync(file) });
+  }
+
+  // 3) 前端与原生动态库产物
   for (const name of ['dist', 'lib']) {
     const dir = path.join(root, name);
     if (!fs.existsSync(dir)) continue;
@@ -179,7 +184,7 @@ function main() {
     output,
     entries: entries.length,
     totalBytes: entries.reduce((sum, item) => sum + item.data.length, 0),
-    nativeLibs: [],
+    nativeLibs: entries.filter((item) => item.name.startsWith('lib/')).map((item) => item.name),
   };
   fs.writeFileSync(path.join(outDir, 'meta.json'), `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
   process.stdout.write(`${JSON.stringify(meta)}\n`);

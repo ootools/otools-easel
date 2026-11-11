@@ -1,13 +1,13 @@
 //! Accounts registry, login markers, profile build, session delete, artifact archive.
 //! Browser automation (Playwright) stays in the Python skill scripts; Rust only orchestrates.
 
-use crate::files::{self, output_path};
+use crate::files::output_path;
 use crate::router::ApiError;
 use crate::workspace;
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+
 
 fn error(status: u16, detail: impl Into<String>) -> ApiError { ApiError { status, detail: detail.into() } }
 
@@ -76,7 +76,6 @@ pub fn delete_session(key: &str) -> Result<Value, ApiError> {
     if key.trim().is_empty() || key.contains("..") || key.contains('/') || key.contains('\\') {
         return Err(error(400, "非法会话标识"));
     }
-    if crate::chat_routes::has_running_jobs() { return Err(error(409, "请先停止当前对话再删除")); }
     let dir = workspace::project_root().join("sessions").join(key);
     let mut deleted = false;
     if dir.is_dir() {
@@ -93,7 +92,7 @@ pub fn delete_session(key: &str) -> Result<Value, ApiError> {
 fn valid_new_persona(name: &str) -> Result<(), ApiError> {
     if name.trim().is_empty() { return Err(error(400, "画像名不能为空")); }
     if name.contains(['/', '\\']) { return Err(error(400, "画像名不能包含 / 或 \\ 字符")); }
-    if name.starts_with(['.', '_']) { return Err(error(400, "画像名不能以 . 或 _ 开头")); }
+    if name.chars().any(char::is_control) || name.contains(':') || name.starts_with(['.', '_']) { return Err(error(400, "画像名不能以 . 或 _ 开头")); }
     Ok(())
 }
 
@@ -141,11 +140,12 @@ fn profile_status_path(name: &str) -> PathBuf {
     workspace::project_root().join("outputs/_profile_build").join(format!("{name}.json"))
 }
 
-fn write_profile_status(name: &str, state: &str, log: &str) {
+fn write_profile_status(name: &str, payload: &Value) -> Result<(), ApiError> {
     let path = profile_status_path(name);
-    if let Some(parent) = path.parent() { let _ = fs::create_dir_all(parent); }
-    let payload = json!({"state":state,"log":log,"ts":chrono::Utc::now().timestamp()});
-    let _ = fs::write(path, payload.to_string());
+    fs::create_dir_all(path.parent().unwrap()).map_err(|cause| error(500, cause.to_string()))?;
+    let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    fs::write(&temp, payload.to_string()).map_err(|cause| error(500, cause.to_string()))?;
+    fs::rename(temp, path).map_err(|cause| error(500, cause.to_string()))
 }
 
 pub fn profile_build(body: &Value) -> Result<Value, ApiError> {
@@ -156,37 +156,42 @@ pub fn profile_build(body: &Value) -> Result<Value, ApiError> {
     if dir.exists() { return Err(error(409, format!("画像「{name}」已存在，请换一个名字"))); }
     let form = body.get("form").cloned().unwrap_or_else(|| json!({}));
     write_baseline(&root, &name, &form);
-    write_profile_status(&name, "running", "AI 正在分析并增强画像…");
-    // 后台 agent 增强走 codex 直连（同 chat 路由），不阻塞基线可用性。
-    let status_name = name.clone();
-    let inner_name = name.clone();
     let instruction = format!(
-        "请执行 skill-profile-builder 完善已存在的画像「{name}」。用户已通过表单提供基线六维文件，请：\
-         ①尽力分析社媒链接（抓不到就降级，标注[待补充]，勿臆造）\
-         ②据分析结果润色/补全各维度文件\
-         ③给出一句话完成度摘要。");
-    std::thread::Builder::new().name(format!("easel-profile-{name}")).spawn(move || {
-        let inner = std::thread::Builder::new().spawn(move || {
-            let job = json!({"message": instruction, "persona": inner_name, "skillName": "skill-profile-builder"});
-            crate::chat_routes::chat_stream(&job)
-        });
-        let result = match inner {
-            Ok(handle) => handle.join().unwrap_or_else(|_| Err((500, "增强线程崩溃".to_string()))),
-            Err(cause) => Err((500, format!("{cause}"))),
-        };
-        match result {
-            Ok(_) => write_profile_status(&status_name, "done", "AI 增强完成"),
-            Err((_, detail)) => write_profile_status(&status_name, "failed", &format!("AI 增强失败（基线画像已可用）：{detail}")),
-        }
-    }).map_err(|cause| error(500, cause.to_string()))?;
-    Ok(json!({"created":dir.is_dir(),"name":name,"async":true,"status":"running"}))
+        "请执行 skill-profile-builder 完善已存在的画像「{name}」。用户已通过表单提供基线六维文件，请分析社媒链接（抓不到就标注[待补充]，勿臆造），润色补全各维度文件，并给出一句话完成度摘要。");
+    let turn_id = uuid::Uuid::new_v4().to_string();
+    let preparation = json!({"message":instruction,"persona":name,"skillName":"skill-profile-builder","sessionId":format!("profile-{turn_id}")});
+    write_profile_status(&name, &json!({"state":"pending","log":"基线画像已可用，等待宿主增强任务启动","turnId":turn_id,"preparation":preparation}))?;
+    Ok(json!({"created":true,"name":name,"async":true,"status":"pending","turnId":turn_id,"preparation":preparation}))
 }
 
-pub fn profile_build_status(name: &str) -> Value {
-    match fs::read_to_string(profile_status_path(name)) {
-        Ok(text) => serde_json::from_str::<Value>(&text).map(|data| json!({"state":data["state"],"log":data["log"]})).unwrap_or_else(|_| json!({"state":"unknown","log":""})),
-        Err(_) => json!({"state":"unknown","log":""}),
+pub fn profile_build_status(name: &str) -> Result<Value, ApiError> {
+    valid_new_persona(name)?;
+    Ok(fs::read_to_string(profile_status_path(name)).ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or_else(|| json!({"state":"unknown","log":""})))
+}
+
+pub fn profile_build_update(name: &str, body: &Value) -> Result<Value, ApiError> {
+    let mut status = profile_build_status(name)?;
+    if status["state"] == "unknown" { return Err(error(404, "画像构建记录不存在")); }
+    if let Some(id) = body["runId"].as_str() {
+        if id.is_empty() || id.len() > 256 || id.chars().any(char::is_control) { return Err(error(400, "任务标识无效")); }
+        if status["runId"].as_str().is_some_and(|existing| existing != id) { return Err(error(409, "画像已关联另一宿主任务")); }
+        status["runId"] = json!(id);
     }
+    if let Some(id) = body["sessionId"].as_str() { status["sessionId"] = json!(id); }
+    let host_status = body["hostStatus"].as_str().unwrap_or("running");
+    let state = match host_status {
+        "completed" if status["runId"].is_string() => "done",
+        "running" if status["runId"].is_string() => "running",
+        "failed" | "cancelled" | "interrupted" => "failed",
+        _ => return Err(error(400, "宿主任务状态无效")),
+    };
+    status["state"] = json!(state);
+    status["hostStatus"] = json!(host_status);
+    status["log"] = json!(body["log"].as_str().unwrap_or(if state == "done" { "AI 增强完成" } else if state == "failed" { "增强未完成；基线画像仍可用" } else { "宿主正在增强画像" }));
+    write_profile_status(name, &status)?;
+    Ok(status)
 }
 
 // ── artifacts archive（ZIP 索引）────────────────────────────────────────────

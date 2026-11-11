@@ -1,6 +1,6 @@
 //! Codex and ai-switch settings with the original React settings contracts.
 
-use crate::{agent, chat_routes, process, router::ApiError, workspace};
+use crate::{router::ApiError, workspace};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::fs;
@@ -66,48 +66,29 @@ pub fn harness_config() -> Value {
     config
 }
 
-pub fn codex_binary() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("OTOOLS_CODEX_PATH") {
-        let path = PathBuf::from(path);
-        return path.is_file().then_some(path);
-    }
-    process::executable("codex").or_else(|| {
-        let mut known = vec![home().join(".codex/bin/codex")];
-        #[cfg(target_os = "macos")]
-        { known.push("/Applications/ChatGPT.app/Contents/Resources/codex".into()); }
-        known.into_iter().find(|path| path.is_file())
-    })
-}
-
 pub fn harness_get() -> SettingsResult {
     let mut config = harness_config();
     config["locked"] = json!(runtime_override().is_some());
-    config["agents"] = json!([
-        {"id":"api","label":"仅聊天模式","protocol":"模型 API 直连","installed":true,"install_hint":"在 OTools 设置中配置 ai-switch 网关"},
-        {"id":"codex","label":"Codex","protocol":"app-server","installed":codex_binary().is_some(),"install_hint":"安装 @openai/codex，或设置 OTOOLS_CODEX_PATH"}
-    ]);
+    config["agents"] = json!([]); // Host providers are merged by the frontend.
+    config["codex_auto_approve"] = json!(false);
     Ok(config)
 }
 
 pub fn harness_save(body: &Value) -> SettingsResult {
     let _guard = CONFIG_LOCK.lock().map_err(|_| error(500, "配置状态不可用"))?;
     let runtime = body["runtime"].as_str().ok_or_else(|| error(422, "缺少执行引擎"))?;
-    if !matches!(runtime, "api" | "codex") { return Err(error(400, "当前 OTools 移植仅提供 Codex 与仅聊天模式")); }
+    if runtime.is_empty() || runtime.len() > 128 || !runtime.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':')) { return Err(error(400, "执行引擎标识无效")); }
     let sandbox = body["sandbox"].as_str().unwrap_or("workspace-write");
     if !matches!(sandbox, "read-only" | "workspace-write") { return Err(error(400, "请选择只读或工作区写入权限")); }
     let model = body.get("model").map(|value| value.as_str().ok_or_else(|| error(422, "模型名称必须为字符串"))).transpose()?.unwrap_or("");
     if model.chars().count() > 240 || model.chars().any(char::is_control) { return Err(error(400, "模型名称无效")); }
     if runtime_override().is_some() { return Err(error(409, "启动环境固定了底座，请修改 EASEL_AGENT_RUNTIME 后重启")); }
-    if chat_routes::has_running_jobs() { return Err(error(409, "请等待当前任务完成或停止后切换底座")); }
-    if runtime == "codex" && codex_binary().is_none() { return Err(error(409, "请先安装对应 Agent CLI，再切换")); }
-    let approve = body.get("codex_auto_approve").filter(|value| !value.is_null()).map(|value| value.as_bool().ok_or_else(|| error(422, "授权选项必须为布尔值"))).transpose()?;
     let mut config = harness_config();
     config["runtime"] = json!(runtime);
     config["sandbox"] = json!(sandbox);
     config["models"][runtime] = json!(model.trim());
-    if runtime == "codex" { if let Some(approve) = approve { config["codex_auto_approve"] = json!(approve); } }
+    config["codex_auto_approve"] = json!(false);
     write_atomic(&harness_file(), &serde_json::to_vec_pretty(&config).map_err(|cause| error(500, cause.to_string()))?)?;
-    chat_routes::close_idle_sessions();
     harness_get()
 }
 
@@ -115,9 +96,8 @@ pub fn bootstrap() -> SettingsResult {
     Ok(json!({"modelConfigured":false,"envKeyOk":false,"routeOk":false,"routeDetail":"模型和 Agent 状态由 Otools 宿主提供","gatewayUp":false,"installWarnings":[],"runtime":harness_config()["runtime"],"authVerified":false}))
 }
 
-fn host_models_required() -> SettingsResult { Err(error(426, "请更新 Otools 并使用插件内模型选择；连接与凭据由宿主管理")) }
-pub fn model_channels() -> SettingsResult { host_models_required() }
-pub fn model_save(_body: &Value) -> SettingsResult { host_models_required() }
+pub fn model_channels() -> SettingsResult { crate::chat_routes::upgrade_required() }
+pub fn model_save(_body: &Value) -> SettingsResult { crate::chat_routes::upgrade_required() }
 
 pub fn proxy_get() -> SettingsResult {
     let fixed = std::env::var("EASEL_PROXY").ok();
@@ -158,26 +138,9 @@ pub fn write_env(updates: &HashMap<String, String>) -> Result<(), ApiError> {
     write_atomic(&path, (output.join("\n") + "\n").as_bytes())
 }
 
-pub fn available_models(_body: &Value) -> SettingsResult { host_models_required() }
-pub fn selftest(_body: &Value) -> SettingsResult { host_models_required() }
+pub fn available_models(_body: &Value) -> SettingsResult { crate::chat_routes::upgrade_required() }
+pub fn selftest(_body: &Value) -> SettingsResult { crate::chat_routes::upgrade_required() }
 
-pub fn harness_models(runtime: &str) -> SettingsResult {
-    if runtime != "codex" { return Err(error(400, "此底座不支持原生模型列表")); }
-    let binary = codex_binary().ok_or_else(|| error(409, "Codex CLI 未安装"))?;
-    let value = crate::runtime().block_on(async {
-        let (mut server, events) = agent::AppServer::spawn(agent::SpawnOptions { binary:binary.to_string_lossy().into_owned(), cwd:workspace::project_root(), env:HashMap::new(), args:vec!["app-server".into()] }).map_err(|cause| error(409, cause.to_string()))?;
-        let result = tokio::time::timeout(Duration::from_secs(25), async {
-            server.ensure_initialized().await.map_err(|cause| error(409, cause.to_string()))?;
-            server.model_list().await.map_err(|cause| error(409, cause.to_string()))
-        }).await.map_err(|_| error(504, "原生模型列表读取超时"));
-        server.terminate().await;
-        drop(events);
-        result?
-    })?;
-    let rows = value.get("data").or_else(|| value.get("models")).and_then(Value::as_array).cloned().unwrap_or_default();
-    let models: Vec<Value> = rows.iter().filter_map(|row| {
-        let id = row.get("model").or_else(|| row.get("id"))?.as_str()?;
-        Some(json!({"id":id,"label":row.get("displayName").or_else(|| row.get("name")).and_then(Value::as_str).unwrap_or(id),"default":row["isDefault"].as_bool().unwrap_or(false)}))
-    }).collect();
-    Ok(json!({"runtime":"codex","models":models}))
+pub fn harness_models(_runtime: &str) -> SettingsResult {
+    crate::chat_routes::upgrade_required()
 }

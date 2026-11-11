@@ -1,3 +1,4 @@
+import type { TaskController } from '../lib/hostAgent';
 import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   createSchedule, executeSkill, runAgent, streamChat,
@@ -86,7 +87,7 @@ export default function PublishPage({ persona }: PublishPageProps) {
   const cleanupPublishActivity = useCallback(() => {
     // 卸载：中止流 + 停掉所有发布状态轮询（否则在后台空转最长 15 分钟）
     aliveRef.current = false;
-    adaptCtl.current?.abort();
+    (adaptCtl.current as TaskController | null)?.detach?.();
     pollTimers.current.forEach((iv) => clearInterval(iv));
     pollTimers.current.clear();
   }, []);

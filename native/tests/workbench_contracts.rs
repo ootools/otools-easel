@@ -140,11 +140,11 @@ fn chat_refuses_cross_session_attachments_before_starting_an_agent() {
     workspace.write("outputs/_harness/config.json", r#"{"runtime":"api","models":{},"sandbox":"read-only"}"#);
     let uploaded = route("POST", "/api/upload", &json!({"fields":{"sessionId":"session-A"},"files":[{"name":"素材.png","contentBase64":"aGk="}]})).unwrap();
     let attachments = uploaded["files"].clone();
-    let result = route("POST", "/api/chat/stream", &json!({"message":"使用素材","sessionId":"session-B","attachments":attachments}));
+    let result = route("POST", "/api/agent/prepare", &json!({"message":"使用素材","sessionId":"session-B","attachments":attachments}));
     assert_eq!(result.unwrap_err().status, 403);
     let mut changed = attachments.clone();
     changed[0]["id"] = json!("fake");
-    assert_eq!(route("POST", "/api/chat/stream", &json!({"message":"使用素材","sessionId":"session-A","attachments":changed})).unwrap_err().status, 403);
+    assert_eq!(route("POST", "/api/agent/prepare", &json!({"message":"使用素材","sessionId":"session-A","attachments":changed})).unwrap_err().status, 403);
     let context = otools_easel_native::files::attachment_context(Some("session-A"), &attachments).unwrap();
     assert!(context.contains(attachments[0]["path"].as_str().unwrap()));
 }

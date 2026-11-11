@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import MessageBubble from './MessageBubble';
 import QuestionCards from './QuestionCards';
 import BrushEntry from './BrushEntry';
+import ComposerAiControls from './ComposerAiControls';
 import type { ChatSession, ChatMessage, StreamState } from '../lib/store';
 import { uploadFiles, adoptOversize, fetchUploadLimits } from '../lib/api';
 import type { UploadedFile } from '../lib/api';
@@ -9,6 +10,7 @@ import { IconArrowUp, IconStop, IconPlus, IconFile } from './icons';
 
 interface ChatPageProps {
   apiDirect: boolean;
+  runtime:string;
   session: ChatSession;
   stream?: StreamState;          // 进行中的流式态（来自 App，切页也不丢）
   onSend: (displayText: string, attachments?: UploadedFile[]) => void;
@@ -37,7 +39,7 @@ function greeting(): string {
   return `${g}，想创作点什么？`;
 }
 
-export default function ChatPage({ apiDirect, session, stream, onSend, onStop, onResend, onQuestionAnswered, onQuestionClosed }: ChatPageProps) {
+export default function ChatPage({ apiDirect, runtime, session, stream, onSend, onStop, onResend, onQuestionAnswered, onQuestionClosed }: ChatPageProps) {
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<UploadedFile[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -142,7 +144,7 @@ export default function ChatPage({ apiDirect, session, stream, onSend, onStop, o
         </div>
       )}
       <div className="composer-top">
-        {apiDirect ? <span className="composer-hint">API 直连 · 文字与附件分析</span>
+        {apiDirect ? <span className="composer-hint">宿主 AI · 文字与文本附件</span>
           : <BrushEntry onPick={(t) => { setInput(t); requestAnimationFrame(() => textareaRef.current?.focus()); }} />}
         <textarea
           ref={textareaRef}
@@ -173,6 +175,7 @@ export default function ChatPage({ apiDirect, session, stream, onSend, onStop, o
           <button className="send-btn" onClick={handleSend} disabled={(!input.trim() && !attachments.length) || uploading} title="发送"><IconArrowUp size={17} /></button>
         )}
       </div>
+      <ComposerAiControls runtime={runtime} sessionId={session?.id} />
     </div>
   );
 
@@ -186,7 +189,7 @@ export default function ChatPage({ apiDirect, session, stream, onSend, onStop, o
             <span>Easel</span>
           </div>
           <h1 className="chat-hero-title">{greeting()}</h1>
-          <p className="chat-hero-sub">{apiDirect ? 'API 直连：写文案、策划选题、分析附件。本机工具和自动发布未启用。'
+          <p className="chat-hero-sub">{apiDirect ? '宿主 AI：写文案、策划选题、分析文本附件。图片、文档与媒体分析请使用 Agent。'
             : '从选题到发布，一站式帮你把想法做成能发的内容。'}</p>
           {inputBox(true)}
           <div className="suggestions">

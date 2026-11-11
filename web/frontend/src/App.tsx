@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Sidebar from './components/Sidebar';
+import QuestionCards from './components/QuestionCards';
+import { interactionQuestions, subscribeInteractions, observeAgentTask, isHostTaskObserved, taskController, type TaskController } from './lib/hostAgent';
+import { loadHostTasks } from './lib/store';
 import type { Page } from './components/Sidebar';
 import ChatPage from './components/ChatPage';
 import SkillPage from './components/SkillPage';
@@ -15,7 +18,7 @@ import BreakdownPage from './components/BreakdownPage';
 import SubNav from './components/SubNav';
 import OnboardingWizard from './components/OnboardingWizard';
 import SettingsPanel from './components/SettingsPanel';
-import { fetchStatus, fetchSettingsBootstrap, fetchPersonas, streamChat, fetchLastTurn, stopChat } from './lib/api';
+import { fetchStatus, fetchSettingsBootstrap, fetchPersonas, streamChat, fetchLastTurn, stopChat, profileBuildStatus } from './lib/api';
 import type { PersonaItem, UploadedFile, ChatQuestion } from './lib/api';
 import { questionStatus } from './lib/api';
 import { deleteSession as deleteRemoteSession } from './lib/api';
@@ -45,6 +48,8 @@ function onboardingSeen(): boolean {
 }
 
 export default function App() {
+  const [auxQuestions,setAuxQuestions]=useState(interactionQuestions);
+  useEffect(()=>subscribeInteractions(()=>setAuxQuestions(interactionQuestions())),[]);
   const [currentPage, setCurrentPage] = useState<Page>('dashboard');
   const [personas, setPersonas] = useState<PersonaItem[]>([]);
   const personaRequestId = useRef(0);
@@ -506,6 +511,24 @@ export default function App() {
     );
   }, [appendAssistant, clearStream, finalizeStream, closeQuestion, receiveQuestion]);
 
+  useEffect(()=>{
+    const controllers:TaskController[]=[];
+    const recoverAuxiliary=()=>{
+      const known=new Set(loadSessions().map(session=>session.id));
+      for(const task of Object.values(loadHostTasks())) {
+        if(task.status!=='running' || known.has(task.sessionId) || task.profileName || isHostTaskObserved(task.runId)) continue;
+        const controller=taskController();controllers.push(controller);
+        void observeAgentTask(task,{onToken:()=>{}},controller,true).catch(()=>{});
+      }
+    };
+    recoverAuxiliary();
+    const detach=()=>{for(const controller of Object.values(streamCtl.current)) (controller as TaskController).detach?.();for(const controller of controllers)controller.detach();};
+    const refreshProfiles=()=>{for(const task of Object.values(loadHostTasks())) if(task.profileName) void profileBuildStatus(task.profileName).catch(()=>{});};
+    refreshProfiles();const timer=setInterval(()=>{refreshProfiles();recoverAuxiliary();},2000);
+    window.addEventListener('pagehide',detach);
+    return ()=>{clearInterval(timer);window.removeEventListener('pagehide',detach);detach();};
+  },[]);
+
   // 活跃会话确定后（含挂载首刷）尝试恢复它悬空的一轮
   useEffect(() => {
     if (activeSessionId) resumePendingTurn(activeSessionId);
@@ -741,6 +764,7 @@ export default function App() {
       case 'chat':
         return activeSession ? (
           <ChatPage
+            runtime={agentRuntime}
             apiDirect={apiDirect}
             key={activeSession.id}
             session={activeSession}
@@ -844,6 +868,7 @@ export default function App() {
         )}
         <div className="page-host">
           {renderPage()}
+          {auxQuestions.length>0 && <div className="host-agent-questions" style={{position:'fixed',inset:'12% 10%',zIndex:2100,overflowY:'auto',background:'var(--bg-elev)',padding:24,boxShadow:'var(--shadow-lg)'}} role="region" aria-label="后台任务问题"><QuestionCards questions={auxQuestions}/></div>}
         </div>
       </main>
 
@@ -874,7 +899,7 @@ export default function App() {
       {settingsOpen && (
         <SettingsPanel
           banner={needModelSetup
-            ? '还没有配置模型 —— 填一个 API Key 才能开始对话。保存后会自动同步配置并重启网关。'
+            ? '请在 Otools 中配置 AI 服务或安装 Agent。原有文件与画像仍可浏览。'
             : ''}
           onClose={() => {
             setSettingsOpen(false);

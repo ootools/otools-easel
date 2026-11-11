@@ -79,28 +79,8 @@ pub fn route(method: &str, path: &str, body: &Value) -> ApiResult {
         ("POST", ["api", "upload", "abort"]) => files::upload_abort(body),
         ("POST", ["api", "upload"]) => files::upload(body, false),
         ("POST", ["api", "upload", "local"]) => files::upload(body, true),
-        ("GET", ["api", "chat", "jobs", turn_id, "events"]) => {
-            let after = query_map.get("after").and_then(|value| value.parse::<u64>().ok()).unwrap_or(0);
-            chat_routes::job_events(turn_id, after).map_err(|(status, detail)| ApiError::new(status, detail))
-        }
-        ("GET", ["api", "chat", "last", session_key]) => {
-            chat_routes::chat_last(session_key).map_err(|(status, detail)| ApiError::new(status, detail))
-        }
-        ("POST", ["api", "chat", "stream"]) => {
-            chat_routes::chat_stream(body).map_err(|(status, detail)| ApiError::new(status, detail))
-        }
-        ("POST", ["api", "chat", "stop"]) => {
-            chat_routes::chat_stop(body).map_err(|(status, detail)| ApiError::new(status, detail))
-        }
-        ("POST", ["api", "chat", "question", "answer"]) => {
-            chat_routes::question_answer(body).map_err(|(status, detail)| ApiError::new(status, detail))
-        }
-        ("POST", ["api", "chat", "question", "status"]) => {
-            chat_routes::question_status(body).map_err(|(status, detail)| ApiError::new(status, detail))
-        }
-        ("POST", ["api", "skill"]) => {
-            chat_routes::skill_run(body).map_err(|(status, detail)| ApiError::new(status, detail))
-        }
+        ("POST", ["api", "agent", "prepare"]) => chat_routes::prepare(body),
+        (_, ["api", "chat", ..]) | ("POST", ["api", "skill"]) => chat_routes::upgrade_required(),
         ("GET", ["api", "trends"]) => Ok(trends::trends_list(
             query_map.get("platforms").map(String::as_str),
             query_map.get("limit").map(String::as_str),
@@ -153,7 +133,8 @@ pub fn route(method: &str, path: &str, body: &Value) -> ApiResult {
         ("GET", ["api", "analytics", platform]) => orchestration::analytics_fetch(platform).map_err(|cause| ApiError::new(cause.status, cause.detail)),
         ("DELETE", ["api", "session", key]) => publishing::delete_session(key).map_err(|cause| ApiError::new(cause.status, cause.detail)),
         ("POST", ["api", "profile", "build"]) => publishing::profile_build(body).map_err(|cause| ApiError::new(cause.status, cause.detail)),
-        ("GET", ["api", "profile", "build", "status", name]) => Ok(publishing::profile_build_status(name)),
+        ("GET", ["api", "profile", "build", "status", name]) => publishing::profile_build_status(name),
+        ("PUT", ["api", "profile", "build", "status", name]) => publishing::profile_build_update(name, body),
         ("GET", ["api", "settings", "bootstrap"]) => settings::bootstrap(),
         ("GET", ["api", "settings", "harness"]) => settings::harness_get(),
         ("POST", ["api", "settings", "harness"]) => settings::harness_save(body),

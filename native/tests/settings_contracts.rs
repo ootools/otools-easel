@@ -9,7 +9,7 @@ fn harness_settings_preserve_model_map_and_reject_unsupported_or_unsafe_changes(
     let workspace = TestWorkspace::new("harness");
     let current = route("GET", "/api/settings/harness", &Value::Null).unwrap();
     assert_eq!(current["runtime"], "codex");
-    assert!(current["agents"].as_array().unwrap().iter().any(|agent| agent["id"] == "codex"));
+    assert!(current["agents"].as_array().unwrap().is_empty(), "host owns provider discovery");
     assert!(!current["agents"].as_array().unwrap().iter().any(|agent| agent["id"] == "openclaw"));
     let saved = route("POST", "/api/settings/harness", &json!({"runtime":"api","model":" text-test ","sandbox":"read-only","codex_auto_approve":false})).unwrap();
     assert_eq!(saved["models"]["api"], "text-test");
@@ -19,10 +19,9 @@ fn harness_settings_preserve_model_map_and_reject_unsupported_or_unsafe_changes(
     assert_eq!(persisted["models"]["api"], "text-test");
     assert!(persisted.get("model").is_none());
     for input in [
-        json!({"runtime":"openclaw","model":"m","sandbox":"read-only"}),
+        json!({"runtime":"../invalid","model":"m","sandbox":"read-only"}),
         json!({"runtime":"api","model":"m","sandbox":"danger-full-access"}),
         json!({"runtime":"api","model":"a\nb","sandbox":"read-only"}),
-        json!({"runtime":"api","model":"m","sandbox":"read-only","codex_auto_approve":"true"}),
     ] {
         assert!(route("POST", "/api/settings/harness", &input).is_err());
     }
