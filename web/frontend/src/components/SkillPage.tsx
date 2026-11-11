@@ -89,7 +89,7 @@ export default function SkillPage({ persona }: SkillPageProps) {
         <h1 className="page-title">技能库</h1>
         <p className="page-subtitle">
           共 {skills.length} 个技能，按流水线层分区浏览。点卡片查看说明、就地运行；
-          标 <span className="badge badge-warn" style={{ padding: '1px 7px' }}>需 API</span> 的需先配置密钥
+          标 <span className="badge badge-warn" style={{ padding: '1px 7px' }}>需模型</span> 的需先连接 AI Switch 并选择媒体模型
           {needApiCount > 0 && `（当前 ${needApiCount} 个待配置）`}。
         </p>
         <div className="skill-search">
@@ -133,7 +133,7 @@ export default function SkillPage({ persona }: SkillPageProps) {
                     style={{ ['--layer-color' as string]: meta.color }}
                     onClick={() => setSelected(s.name)}
                   >
-                    {alert && <div className="skill-card-alert" title="需要配置 API key">!</div>}
+                    {alert && <div className="skill-card-alert" title="需要选择媒体模型">!</div>}
                     <div className="skill-card-icon" style={{ color: meta.color }}><Icon size={19} /></div>
                     <div className="skill-card-name">{displayName(s.name)}</div>
                     <div className="skill-card-rawname">{s.name}</div>

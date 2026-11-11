@@ -44,7 +44,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from model_registry import env_aliases, provider_ids, provider_required_env
+from model_registry import env_aliases, provider_ids, provider_required_env, managed_media_value, allow_env_file_value, require_managed_provider
 
 try:
     # Windows 非交互式/管道 stdout 默认落到系统 ANSI 代码页（如 cp1252），打印中文
@@ -118,11 +118,14 @@ def load_env_file(env_file: Path | None) -> None:
         if not key:
             print(f"警告：.env 第 {line_number} 行缺少变量名，已跳过。", file=sys.stderr)
             continue
-        if key not in os.environ:
+        if key not in os.environ and allow_env_file_value(key):
             os.environ[key] = strip_env_value(value)
 
 
 def env_lookup(name: str) -> str:
+    managed = managed_media_value(name)
+    if managed is not None:
+        return managed
     val = os.environ.get(name, "").strip()
     if val:
         return val
@@ -280,6 +283,7 @@ def resolve_provider(explicit: str | None) -> str:
     if not provider:
         fail("未指定 provider。请用 --provider 或设置 env VIDEO_PROVIDER。"
              f"可选：{ '、'.join(PROVIDERS) }。")
+    require_managed_provider(provider)
     if provider not in PROVIDERS:
         fail(f"不支持的 provider：{provider}。可选：{ '、'.join(PROVIDERS) }。")
     return provider
@@ -300,6 +304,8 @@ def resolve_model(provider: str, explicit: str | None = None, *, image: bool = F
         value = env_lookup(name)
         if value:
             return value
+    if os.environ.get("OTOOLS_AI_MEDIA_MANAGED") == "1":
+        return ""
     defaults = {
         "dashscope": DEFAULT_DASHSCOPE_MODEL,
         "ark": DEFAULT_ARK_MODEL,

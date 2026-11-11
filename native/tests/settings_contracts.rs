@@ -37,23 +37,11 @@ fn model_channels_use_host_gateway_without_exposing_keys_or_replacing_other_sett
         "unrelated":{"preserve":true},
         "ai_switch":{"baseUrl":"http://127.0.0.1:19527","apiKey":"sk-test-never-expose-secret", "endpoints":{"text":"text-a","images":"image-a","video":"video-a","tts":"speech-a","embeddings":"embed-a","stt":"transcribe-a"}}
     }).to_string());
-    let channels = route("GET", "/api/settings/models", &Value::Null).unwrap();
-    for (channel, model) in [("chat","text-a"),("image","image-a"),("video","video-a"),("speech","speech-a"),("transcribe","transcribe-a")] {
-        let row = &channels["channels"][channel]["rows"][0];
-        assert_eq!(row["model"], model);
-        assert_eq!(row["slot"], "ai-switch");
-        assert_eq!(row["baseUrl"], "http://127.0.0.1:19527/v1");
-        assert!(!row["keyMasked"].as_str().unwrap().is_empty());
-    }
-    assert!(!channels.to_string().contains("sk-test-never-expose-secret"));
-    let saved = route("POST", "/api/settings/models/save", &json!({"channel":"image","rows":[{"slot":"ai-switch","model":"image-b","baseUrl":"http://127.0.0.1:19527/v1","key":""}]})).unwrap();
-    assert_eq!(saved["channels"]["image"]["rows"][0]["model"], "image-b");
+    assert_eq!(route("GET", "/api/settings/models", &Value::Null).unwrap_err().status, 426);
+    assert_eq!(route("POST", "/api/settings/models/save", &json!({"channel":"image","rows":[{"slot":"ai-switch","model":"image-b"}]})).unwrap_err().status, 426);
     let config: Value = serde_json::from_str(&std::fs::read_to_string(workspace.root.join("home/.otools/config.json")).unwrap()).unwrap();
     assert_eq!(config["unrelated"]["preserve"], true);
-    assert_eq!(config["ai_switch"]["apiKey"], "sk-test-never-expose-secret");
-    assert_eq!(config["ai_switch"]["endpoints"]["video"], "video-a");
-    let refused = route("POST", "/api/settings/models/save", &json!({"channel":"image","rows":[{"slot":"ai-switch","model":"image-b","baseUrl":"https://different.example/v1","key":""}]})).unwrap_err();
-    assert_eq!(refused.status, 400);
+    assert_eq!(config["ai_switch"]["endpoints"]["images"], "image-a");
 }
 
 #[test]
@@ -65,7 +53,7 @@ fn bootstrap_and_proxy_settings_follow_real_configuration_and_validate_urls() {
     assert_eq!(missing["authVerified"], false);
     workspace.write("home/.otools/config.json", r#"{"ai_switch":{"baseUrl":"http://127.0.0.1:19527/v1","apiKey":"sk-test","endpoints":{"text":"text-a"}}}"#);
     let configured = route("GET", "/api/settings/bootstrap", &Value::Null).unwrap();
-    assert_eq!(configured["modelConfigured"], true);
+    assert_eq!(configured["modelConfigured"], false, "native must not infer host chat readiness from credentials");
     assert_eq!(configured["authVerified"], false);
     let saved = route("POST", "/api/settings/proxy", &json!({"proxy":"http://127.0.0.1:7890"})).unwrap();
     assert_eq!(saved, json!({"ok":true,"proxy":"http://127.0.0.1:7890","source":"envfile"}));
@@ -97,7 +85,7 @@ fn original_skill_cards_have_array_status_and_alias_details_without_frontmatter(
     assert_eq!(detail["apiSpec"], Value::Null);
     workspace.write("home/.otools/config.json", r#"{"ai_switch":{"baseUrl":"http://127.0.0.1:19527","apiKey":"sk-test","endpoints":{"video":"video-a"}}}"#);
     let video = route("GET", "/api/skill/ai-video-gen", &Value::Null).unwrap();
-    assert_eq!(video["apiConfigured"], true);
+    assert_eq!(video["apiConfigured"], false, "host-only readiness must not be inferred from old defaults");
     assert!(video["apiSpec"]["providers"].is_array());
     assert!(!video.to_string().contains("sk-test"));
 }
@@ -152,32 +140,12 @@ fn failed_install_is_reported_as_failed_and_keeps_the_tool_missing() {
 }
 
 #[test]
-fn model_selftest_and_discovery_only_contact_the_configured_gateway_without_generation() {
-    use std::io::{Read, Write};
-    let workspace = TestWorkspace::new("model-selftest");
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    workspace.write("home/.otools/config.json", json!({"ai_switch":{"baseUrl":format!("http://{addr}"),"apiKey":"sk-fixture","endpoints":{"text":"model-fixture"}}}).to_string());
-    let server = std::thread::spawn(move || {
-        for _ in 0..2 {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut buffer = [0; 4096];
-            let length = stream.read(&mut buffer).unwrap();
-            let request = String::from_utf8_lossy(&buffer[..length]);
-            assert!(request.starts_with("GET /v1/models HTTP/1.1"));
-            assert!(request.to_ascii_lowercase().contains("authorization: bearer sk-fixture"));
-            let payload = r#"{"data":[{"id":"model-fixture"}]}"#;
-            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}", payload.len(), payload).unwrap();
-        }
-    });
-    let catalog = route("POST", "/api/settings/models/available", &json!({"slot":"ai-switch","baseUrl":"","key":""})).unwrap();
-    assert_eq!(catalog["models"], json!(["model-fixture"]));
-    let checked = route("POST", "/api/settings/models/selftest", &json!({"channel":"chat"})).unwrap();
-    assert_eq!(checked["channel"], "chat");
-    assert_eq!(checked["results"][0]["ok"], true);
-    assert!(checked["results"][0]["detail"].as_str().unwrap().contains("未执行"));
-    assert!(!checked.to_string().contains("sk-fixture"));
-    server.join().unwrap();
+fn legacy_media_selftest_and_discovery_do_not_read_host_credentials() {
+    let workspace = TestWorkspace::new("legacy-media-models");
+    workspace.write("home/.otools/config.json", r#"{"ai_switch":{"baseUrl":"http://127.0.0.1:1","apiKey":"old-secret","endpoints":{"images":"old-model"}}}"#);
+    for path in ["/api/settings/models/available", "/api/settings/models/selftest"] {
+        assert_eq!(route("POST", path, &json!({"channel":"image"})).unwrap_err().status, 426);
+    }
 }
 
 #[test]

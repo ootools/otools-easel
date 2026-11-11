@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from output_paths import validate_output_path
+from model_registry import managed_media_value, allow_env_file_value
 
 
 ENV_BASE_URL = "IMG_BASE_URL"
@@ -136,12 +137,15 @@ def load_env_file(env_file: Path | None) -> None:
         if not key:
             print(f"警告：.env 第 {line_number} 行缺少变量名，已跳过。", file=sys.stderr)
             continue
-        if key not in os.environ:
+        if key not in os.environ and allow_env_file_value(key):
             os.environ[key] = strip_env_value(value)
 
 
 def resolve_config(name: str) -> tuple[str, str | None]:
     """返回 (值, 命中的变量名)；未配置时返回 ("", None)。不报错，供 check 复用。"""
+    managed = managed_media_value(name)
+    if managed is not None:
+        return managed, name if managed else None
     for candidate in (name, *ENV_ALIASES.get(name, ())):
         value = os.environ.get(candidate, "").strip()
         if value:

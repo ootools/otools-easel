@@ -67,31 +67,13 @@ fn model_slot(name: &str) -> Option<&'static str> {
 }
 
 fn api_status(name: &str) -> (bool, bool) {
-    let Some(slot) = model_slot(name) else { return (name == "paper-explainer", true); };
-    let configured = settings::gateway().map(|config| {
-        !config["apiKey"].as_str().unwrap_or("").trim().is_empty()
-            && !config["endpoints"][slot].as_str().unwrap_or("").trim().is_empty()
-    }).unwrap_or(false);
-    (true, configured)
+    let Some(_slot) = model_slot(name) else { return (name == "paper-explainer", true); };
+    (true, false)
 }
 
 fn api_spec(name: &str, configured: bool) -> Value {
     let Some(slot) = model_slot(name) else { return Value::Null; };
-    let key = match slot { "images" => "IMG", "video" => "VIDEO", "tts" => "VOICE", _ => "MUSIC" };
-    let config = settings::gateway().unwrap_or(Value::Null);
-    let base = config["baseUrl"].as_str().and_then(|base| settings::gateway_root(base).ok()).map(|base| format!("{base}/v1")).unwrap_or_default();
-    let model = config["endpoints"][slot].as_str().unwrap_or("");
-    json!({
-        "label": "ai-switch 网关",
-        "settings": [],
-        "providers": [{
-            "id": "ai-switch", "name": "OTools ai-switch 网关", "keys": [
-                {"env":format!("{key}_API_KEY"),"label":"网关 Key","required":true,"secret":true,"configured":!config["apiKey"].as_str().unwrap_or("").is_empty(),"masked":if config["apiKey"].as_str().unwrap_or("").is_empty(){""}else{"«已配置»"},"choices":[]},
-                {"env":format!("{key}_BASE_URL"),"label":"网关地址","required":true,"secret":false,"configured":!base.is_empty(),"masked":base,"choices":[]},
-                {"env":format!("{key}_MODEL"),"label":"模型","required":true,"secret":false,"configured":configured,"masked":model,"choices":[]}
-            ]
-        }]
-    })
+    json!({ "label":"AI Switch", "settings":[], "providers":[], "channel":slot, "managedByHost":true, "configured":configured })
 }
 
 fn metadata(path: &Path, detail: bool) -> Result<Value, ApiError> {
@@ -100,6 +82,7 @@ fn metadata(path: &Path, detail: bool) -> Result<Value, ApiError> {
     let (description, layer, body) = parse(&raw);
     let (needs_api, configured) = api_status(&name);
     let mut value = json!({"name":name,"description":description,"layer":layer,"needsApi":needs_api,"apiConfigured":configured});
+    if let Some(channel) = model_slot(&name) { value["mediaChannel"] = json!(channel); }
     if detail { value["body"] = json!(body); value["apiSpec"] = if needs_api { api_spec(&name, configured) } else { Value::Null }; }
     Ok(value)
 }

@@ -1,6 +1,8 @@
 // Shared CMD transport for desktop plugins and the OTools remote runtime.
+import type { HostAiApi } from './hostAi.ts';
 
 export interface HostBridge {
+  ai?: HostAiApi;
   invokeNative?: (method: string, payload?: unknown) => Promise<unknown>;
   invokeNativeRaw?: (method: string, payload?: unknown) => Promise<unknown>;
   listenNative?: (handler: (event: unknown) => void) => Promise<() => void | Promise<void>> | (() => void | Promise<void>);

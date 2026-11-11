@@ -1,3 +1,5 @@
+import MediaModelControls from './MediaModelControls';
+import type { MediaChannel } from '../lib/hostMedia';
 import SettingsSelect from './SettingsSelect';
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { fetchSkillDetail, executeSkill, saveEnv } from '../lib/api';
@@ -107,7 +109,14 @@ export default function SkillDrawer({ skillName, persona, onClose, onConfigured 
           {loadErr && <div style={{ color: 'var(--red)', fontSize: 14 }}>{loadErr}</div>}
 
           {/* API 配置 */}
-          {detail?.needsApi && detail.apiSpec && (
+          {detail?.apiSpec?.managedByHost && detail.apiSpec.channel && ['images', 'video', 'tts', 'stt', 'embeddings'].includes(detail.apiSpec.channel) && (
+            <MediaModelControls channel={detail.apiSpec.channel as MediaChannel} onSaved={() => {
+              const seq = ++reqSeq.current;
+              void fetchSkillDetail(skillName).then(fresh => { if (seq === reqSeq.current) setDetail(fresh); });
+              onConfigured();
+            }} />
+          )}
+          {detail?.needsApi && detail.apiSpec && !detail.apiSpec.managedByHost && (
             <div className="panel">
               <div className="panel-title">🔑 {detail.apiSpec.label} · API 配置
                 <span style={{ fontWeight: 400, color: 'var(--text-secondary)', fontSize: 12 }}>
@@ -194,7 +203,7 @@ export default function SkillDrawer({ skillName, persona, onClose, onConfigured 
             <div className="panel-title">▶ 运行</div>
             {blocked && (
               <div style={{ fontSize: 13, color: 'var(--amber)', marginBottom: 10 }}>
-                该 SKILL 需要先配置上面的 API 才能运行。
+                请先连接 AI Switch，并在媒体模型选择中为本插件选一个可用模型。
               </div>
             )}
             <textarea

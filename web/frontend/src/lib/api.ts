@@ -1,5 +1,6 @@
 import { nativeRequest as request, otoolsBridge } from './nativeBridge.ts';
 import { uploadViaChunks } from './uploads.ts';
+import { hostMediaApi, type MediaChannel } from './hostMedia.ts';
 
 export interface StatusResponse {
   gateway: boolean;
@@ -56,6 +57,7 @@ export interface SkillItem {
   layer: string;
   needsApi: boolean;
   apiConfigured: boolean;
+  mediaChannel?: string;
 }
 
 export interface ApiKeySpec {
@@ -78,6 +80,8 @@ export interface ApiSpec {
   label: string;
   settings: ApiKeySpec[];
   providers: ApiProviderSpec[];
+  channel?: string;
+  managedByHost?: boolean;
 }
 
 export interface SkillDetail {
@@ -198,7 +202,7 @@ export function deletePersona(name: string): Promise<{ ok: boolean; deleted: str
 }
 
 // ---- 热点雷达 ----
-import { parseTrends, parseTrendSources, parseTrendManagement } from './trendValidation';
+import { parseTrends, parseTrendSources, parseTrendManagement } from './trendValidation.ts';
 
 async function trendRequest(url: string, options: RequestInit = {}, timeout = 10000): Promise<unknown> {
   // 流式读取、4MiB 上限与容错 JSON 解析已下沉到 Rust 端。
@@ -291,12 +295,27 @@ export function deleteIdea(id: string): Promise<{ ok: boolean }> {
   return request(`/api/ideas/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
-export function fetchSkills(): Promise<SkillItem[]> {
-  return request<SkillItem[]>('/api/skills');
+async function mediaReady(channel: string): Promise<boolean> {
+  if (!['images', 'video', 'tts', 'stt', 'embeddings'].includes(channel)) return false;
+  try {
+    const catalog = await hostMediaApi().models({ channel: channel as MediaChannel });
+    return !!catalog.selection.model && catalog.models.some(model => model.id === catalog.selection.model);
+  } catch { return false; }
+}
+export async function fetchSkills(): Promise<SkillItem[]> {
+  const skills = await request<SkillItem[]>('/api/skills');
+  const readiness = new Map<string, Promise<boolean>>();
+  return Promise.all(skills.map(async skill => {
+    if (!skill.mediaChannel) return skill;
+    if (!readiness.has(skill.mediaChannel)) readiness.set(skill.mediaChannel, mediaReady(skill.mediaChannel));
+    return { ...skill, apiConfigured: await readiness.get(skill.mediaChannel)! };
+  }));
 }
 
-export function fetchSkillDetail(name: string): Promise<SkillDetail> {
-  return request<SkillDetail>(`/api/skill/${encodeURIComponent(name)}`);
+export async function fetchSkillDetail(name: string): Promise<SkillDetail> {
+  const detail = await request<SkillDetail>(`/api/skill/${encodeURIComponent(name)}`);
+  if (detail.apiSpec?.managedByHost && detail.apiSpec.channel) return { ...detail, apiConfigured: await mediaReady(detail.apiSpec.channel) };
+  return detail;
 }
 
 /** 保存 API key 到项目根 .env（仅注册表内变量）。返回各需 API 的 skill 是否已就绪。 */

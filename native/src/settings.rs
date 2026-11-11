@@ -17,12 +17,6 @@ pub fn home() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).unwrap_or_else(|| ".".into()))
 }
 
-pub fn host_config_path() -> PathBuf { home().join(".otools/config.json") }
-
-pub fn host_config() -> Value {
-    fs::read_to_string(host_config_path()).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_else(|| json!({}))
-}
-
 fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), ApiError> {
     let parent = path.parent().ok_or_else(|| error(500, "配置路径无效"))?;
     fs::create_dir_all(parent).map_err(|cause| error(500, cause.to_string()))?;
@@ -117,87 +111,13 @@ pub fn harness_save(body: &Value) -> SettingsResult {
     harness_get()
 }
 
-pub fn gateway_root(base: &str) -> Result<String, ApiError> {
-    let base = base.trim().trim_end_matches('/');
-    let base = base.strip_suffix("/v1").unwrap_or(base);
-    let parsed = reqwest::Url::parse(base).map_err(|_| error(400, "网关地址无效"))?;
-    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none()
-        || !parsed.username().is_empty() || parsed.password().is_some() || parsed.port() == Some(0)
-        || parsed.query().is_some() || parsed.fragment().is_some() || base.chars().any(|character| character.is_control() || character.is_whitespace()) || base.contains('\\')
-    { return Err(error(400, "网关地址无效")); }
-    Ok(base.to_string())
-}
-
-pub fn gateway() -> Option<Value> {
-    let config = host_config();
-    let value = config.get("ai_switch")?.clone();
-    gateway_root(value["baseUrl"].as_str()?).ok()?;
-    Some(value)
-}
-
 pub fn bootstrap() -> SettingsResult {
-    let runtime = harness_config()["runtime"].as_str().unwrap_or("codex").to_string();
-    let configured = if runtime == "codex" { codex_binary().is_some() } else {
-        gateway().map(|config| !config["apiKey"].as_str().unwrap_or("").trim().is_empty() && !config["endpoints"]["text"].as_str().unwrap_or("").trim().is_empty()).unwrap_or(false)
-    };
-    let warnings = fs::read_to_string(workspace::project_root().join("outputs/_install/last-install.json")).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok()).and_then(|document| document.get("warnings").cloned()).unwrap_or_else(|| json!([]));
-    Ok(json!({"modelConfigured":configured,"envKeyOk":configured,"routeOk":configured,"routeDetail":if runtime == "codex" {"CLI 检测结果不代表认证成功；请发送消息验证模型可用性"} else {"ai-switch 网关配置状态；尚未执行模型请求"},"gatewayUp":configured,"openclawConfigExists":false,"installWarnings":warnings,"runtime":runtime,"authVerified":false}))
+    Ok(json!({"modelConfigured":false,"envKeyOk":false,"routeOk":false,"routeDetail":"模型和 Agent 状态由 Otools 宿主提供","gatewayUp":false,"installWarnings":[],"runtime":harness_config()["runtime"],"authVerified":false}))
 }
 
-fn masked(key: &str) -> String {
-    if key.trim().is_empty() { String::new() } else { "«已配置»".to_string() }
-}
-
-fn slot_for(channel: &str) -> Result<&'static str, ApiError> {
-    match channel { "chat" => Ok("text"), "image" => Ok("images"), "video" => Ok("video"), "speech" => Ok("tts"), "transcribe" => Ok("stt"), "embeddings" => Ok("embeddings"), _ => Err(error(400, "未知模型通道")) }
-}
-
-pub fn model_channels() -> SettingsResult {
-    let config = gateway().unwrap_or_else(|| json!({"baseUrl":"http://127.0.0.1:19527","apiKey":"","endpoints":{}}));
-    let root = gateway_root(config["baseUrl"].as_str().unwrap_or("http://127.0.0.1:19527"))?;
-    let key = config["apiKey"].as_str().unwrap_or("");
-    let mut channels = Map::new();
-    for channel in ["chat", "transcribe", "image", "video", "speech", "embeddings"] {
-        let slot = slot_for(channel)?;
-        let model = config["endpoints"][slot].as_str().unwrap_or("");
-        channels.insert(channel.into(), json!({"rows":[{
-            "slot":"ai-switch","order":1,"name":"ai-switch 网关","sub":"OTools 宿主配置","type":"openai","protocol":"openai","model":model,"baseUrl":format!("{root}/v1"),"keyMasked":masked(key),"role":"主","result":if key.is_empty() || model.is_empty() {"缺配置"} else {"已配置"},"modelEditable":true,"baseEditable":true,"baseOptional":false,"deletable":false
-        }]}));
-    }
-    channels.insert("music".into(), json!({"rows":[]}));
-    Ok(json!({"transport":"api","channels":channels,"primary":config["endpoints"]["text"].as_str().unwrap_or("")}))
-}
-
-pub fn model_save(body: &Value) -> SettingsResult {
-    let channel = body["channel"].as_str().ok_or_else(|| error(422, "缺少模型通道"))?;
-    let slot = slot_for(channel)?;
-    let rows = body["rows"].as_array().ok_or_else(|| error(422, "缺少模型配置行"))?;
-    if rows.len() != 1 || rows[0]["slot"] != "ai-switch" { return Err(error(400, "请通过 ai-switch 网关配置此通道，上游提供商由网关管理")); }
-    let row = &rows[0];
-    let model = row["model"].as_str().ok_or_else(|| error(422, "模型名称必须为字符串"))?.trim();
-    if model.chars().count() > 240 || model.chars().any(char::is_control) { return Err(error(400, "模型名称无效")); }
-    let _guard = CONFIG_LOCK.lock().map_err(|_| error(500, "配置状态不可用"))?;
-    let mut config = host_config();
-    if !config.is_object() { return Err(error(409, "宿主配置格式无效")); }
-    let existing = config.get("ai_switch").cloned().unwrap_or_else(|| json!({"baseUrl":"","apiKey":"","endpoints":{}}));
-    let base = row["baseUrl"].as_str().unwrap_or(existing["baseUrl"].as_str().unwrap_or(""));
-    let root = gateway_root(base)?;
-    let new_key = row["key"].as_str().unwrap_or("").trim();
-    let old_key = existing["apiKey"].as_str().unwrap_or("");
-    if new_key.chars().any(char::is_control) { return Err(error(400, "Key 不能包含控制字符")); }
-    if new_key.is_empty() && !old_key.is_empty() && gateway_root(existing["baseUrl"].as_str().unwrap_or("")).ok().as_deref() != Some(&root) { return Err(error(400, "更换网关地址时必须重新填写 Key")); }
-    if !config["ai_switch"].is_object() { config["ai_switch"] = json!({"endpoints":{}}); }
-    config["ai_switch"]["baseUrl"] = json!(root);
-    config["ai_switch"]["apiKey"] = json!(if new_key.is_empty() {old_key} else {new_key});
-    if !config["ai_switch"]["endpoints"].is_object() { config["ai_switch"]["endpoints"] = json!({}); }
-    config["ai_switch"]["endpoints"][slot] = json!(model);
-    if channel == "chat" { config["ai_settings"] = json!({"provider":"openai","baseUrl":format!("{root}/v1"),"apiKey":config["ai_switch"]["apiKey"],"model":model}); }
-    write_atomic(&host_config_path(), &serde_json::to_vec_pretty(&config).map_err(|cause| error(500, cause.to_string()))?)?;
-    let mut response = model_channels()?;
-    response["ok"] = json!(true);
-    response["note"] = json!("已保存到 OTools ai-switch 网关配置；下一轮生效");
-    Ok(response)
-}
+fn host_models_required() -> SettingsResult { Err(error(426, "请更新 Otools 并使用插件内模型选择；连接与凭据由宿主管理")) }
+pub fn model_channels() -> SettingsResult { host_models_required() }
+pub fn model_save(_body: &Value) -> SettingsResult { host_models_required() }
 
 pub fn proxy_get() -> SettingsResult {
     let fixed = std::env::var("EASEL_PROXY").ok();
@@ -238,71 +158,11 @@ pub fn write_env(updates: &HashMap<String, String>) -> Result<(), ApiError> {
     write_atomic(&path, (output.join("\n") + "\n").as_bytes())
 }
 
-pub fn available_models(body: &Value) -> SettingsResult {
-    let config = gateway().ok_or_else(|| error(409, "请先在 OTools 配置 ai-switch 网关"))?;
-    let stored_root = gateway_root(config["baseUrl"].as_str().unwrap_or(""))?;
-    let requested = body["baseUrl"].as_str().unwrap_or("").trim();
-    let root = if requested.is_empty() { stored_root.clone() } else { gateway_root(requested)? };
-    let explicit = body["key"].as_str().unwrap_or("").trim();
-    if root != stored_root { return Err(error(400, "模型发现必须对接已配置的 ai-switch 网关；先保存新地址与 Key")); }
-    let key = if explicit.is_empty() { config["apiKey"].as_str().unwrap_or("") } else { explicit };
-    if key.is_empty() { return Err(error(400, "网关 Key 未配置")); }
-    let value = crate::runtime().block_on(async {
-        let client = reqwest::Client::builder().timeout(Duration::from_secs(20)).redirect(reqwest::redirect::Policy::none()).build().map_err(|cause| error(500, cause.to_string()))?;
-        let response = client.get(format!("{root}/v1/models")).bearer_auth(key).send().await.map_err(|cause| error(502, cause.without_url().to_string()))?;
-        if !response.status().is_success() { return Err(error(response.status().as_u16(), "网关模型列表请求失败")); }
-        let bytes = response.bytes().await.map_err(|_| error(502, "网关响应读取失败"))?;
-        if bytes.len() > 2 * 1024 * 1024 { return Err(error(502, "模型列表响应过大")); }
-        serde_json::from_slice::<Value>(&bytes).map_err(|_| error(502, "模型列表响应不是有效 JSON"))
-    })?;
-    let models: Vec<String> = value["data"].as_array().ok_or_else(|| error(502, "模型列表缺少 data"))?.iter().filter_map(|row| row["id"].as_str().map(str::to_string)).collect();
-    Ok(json!({"baseUrl":format!("{root}/v1"),"models":models,"fetchedAt":chrono::Utc::now().timestamp()}))
-}
-
-pub fn selftest(body: &Value) -> SettingsResult {
-    let channel = body["channel"].as_str().unwrap_or("chat");
-    let slot = slot_for(channel)?;
-    let mut results = Vec::new();
-    if let Some(config) = gateway() {
-        let root = gateway_root(config["baseUrl"].as_str().unwrap_or(""))?;
-        let key = config["apiKey"].as_str().unwrap_or("");
-        let model = config["endpoints"][slot].as_str().unwrap_or("");
-        if !key.is_empty() && !model.is_empty() {
-            let start = Instant::now();
-            let probe: Result<(u16, bool, String), ApiError> = crate::runtime().block_on(async {
-                let client = reqwest::Client::builder().timeout(Duration::from_secs(20)).redirect(reqwest::redirect::Policy::none()).build().map_err(|cause| error(500, cause.to_string()))?;
-                let response = client.get(format!("{root}/v1/models")).bearer_auth(key).send().await.map_err(|cause| error(502, cause.without_url().to_string()))?;
-                let status = response.status();
-                let success = status.is_success();
-                let body = if success { String::new() } else { response.text().await.unwrap_or_default().chars().take(120).collect() };
-                Ok((status.as_u16(), success, body))
-            });
-            let ms = start.elapsed().as_millis() as u64;
-            match probe {
-                Ok((_, true, _)) => results.push(json!({
-                    "baseUrl": format!("{root}/v1"), "ok": true, "ms": ms,
-                    "detail": format!("模型列表探测成功；未执行生成调用（模型 {model}）")
-                })),
-                Ok((status, false, body)) => results.push(json!({
-                    "baseUrl": format!("{root}/v1"), "ok": false, "ms": ms,
-                    "detail": format!("网关返回 {status}：{body}")
-                })),
-                Err(cause) => results.push(json!({
-                    "baseUrl": format!("{root}/v1"), "ok": false, "ms": ms, "detail": cause.detail
-                })),
-            }
-        }
-    }
-    Ok(json!({"channel":channel,"results":results,"testedAt":chrono::Utc::now().timestamp()}))
-}
+pub fn available_models(_body: &Value) -> SettingsResult { host_models_required() }
+pub fn selftest(_body: &Value) -> SettingsResult { host_models_required() }
 
 pub fn harness_models(runtime: &str) -> SettingsResult {
     if runtime != "codex" { return Err(error(400, "此底座不支持原生模型列表")); }
-    if gateway().is_some() {
-        let value = available_models(&json!({}))?;
-        let models: Vec<Value> = value["models"].as_array().unwrap().iter().map(|id| json!({"id":id,"label":id,"default":false})).collect();
-        return Ok(json!({"runtime":"codex","models":models}));
-    }
     let binary = codex_binary().ok_or_else(|| error(409, "Codex CLI 未安装"))?;
     let value = crate::runtime().block_on(async {
         let (mut server, events) = agent::AppServer::spawn(agent::SpawnOptions { binary:binary.to_string_lossy().into_owned(), cwd:workspace::project_root(), env:HashMap::new(), args:vec!["app-server".into()] }).map_err(|cause| error(409, cause.to_string()))?;

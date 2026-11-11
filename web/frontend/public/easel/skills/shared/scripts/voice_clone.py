@@ -61,7 +61,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from model_registry import env_aliases, provider_ids, provider_required_env
+from model_registry import env_aliases, provider_ids, provider_required_env, managed_media_value, allow_env_file_value, require_managed_provider
 
 UA = "Easel-voice-clone/0.1"
 PROVIDERS = provider_ids("voice")
@@ -106,11 +106,14 @@ def load_env_file(env_file: Path | None) -> None:
             continue
         key, value = line.split("=", 1)
         key = key.strip()
-        if key and key not in os.environ:
+        if key and key not in os.environ and allow_env_file_value(key):
             os.environ[key] = strip_env_value(value)
 
 
 def env_lookup(name: str) -> str:
+    managed = managed_media_value(name)
+    if managed is not None:
+        return managed
     for candidate in (name, *ENV_ALIASES.get(name, ())):
         value = os.environ.get(candidate, "").strip()
         if value:
@@ -130,6 +133,7 @@ def resolve_provider(explicit: str | None) -> str:
     provider = (explicit or os.environ.get("VOICE_PROVIDER", "") or "").strip()
     if not provider:
         fail(f"未指定 provider。用 --provider 或设 VOICE_PROVIDER。可选：{'、'.join(PROVIDERS)}。")
+    require_managed_provider(provider)
     if provider not in PROVIDERS:
         fail(f"不支持的 provider：{provider}。可选：{'、'.join(PROVIDERS)}。")
     return provider
@@ -388,7 +392,11 @@ def clone_fish(a, out: Path) -> Path:
 def clone_openai(a, out: Path) -> Path:
     key = require_env("VOICE_API_KEY")
     base = require_env("VOICE_BASE_URL").rstrip("/")
-    model = a.model or os.environ.get("VOICE_MODEL", "").strip() or "tts-1"
+    model = a.model or env_lookup("VOICE_MODEL")
+    if not model:
+        if os.environ.get("OTOOLS_AI_MEDIA_MANAGED") == "1":
+            fail("请在 Easel 中选择语音模型。")
+        model = "tts-1"
     voice = a.voice_id or "alloy"
     text = a.text
     payload: dict[str, Any] = {"model": model, "voice": voice,

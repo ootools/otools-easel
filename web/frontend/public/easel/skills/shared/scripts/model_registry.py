@@ -210,6 +210,26 @@ def env_aliases(group: str) -> dict[str, tuple[str, ...]]:
 _PLACEHOLDER_RE = re.compile(r"replace_me|your[-_]?api[-_]?key|xxx|^\.{3}$|^<.*>$", re.I)
 
 
+def managed_media_value(name: str) -> str | None:
+    """A host task's explicit media environment must not fall back to credential aliases."""
+    if os.environ.get("OTOOLS_AI_MEDIA_MANAGED") == "1":
+        if name.startswith(("IMG_", "VIDEO_", "VOICE_", "ASR_", "EMBEDDINGS_")):
+            return os.environ.get(name, "").strip()
+        return ""
+    return None
+
+
+def allow_env_file_value(name: str) -> bool:
+    if os.environ.get("OTOOLS_AI_MEDIA_MANAGED") != "1":
+        return True
+    return name == "EASEL_PROXY"
+
+
+def require_managed_provider(provider: str) -> None:
+    if os.environ.get("OTOOLS_AI_MEDIA_MANAGED") == "1" and provider != "openai-compatible":
+        raise SystemExit("媒体请求由 AI Switch 管理，请使用已选择的插件媒体模型。")
+
+
 def read_env_file(path: Path | None = None) -> dict[str, str]:
     """Read KEY=value without evaluating shell syntax; process env takes precedence."""
     if path is None:
@@ -230,6 +250,18 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
                 value = value[1:-1]
             values[key.strip()] = value
     values.update({key: value for key, value in os.environ.items() if value})
+    if os.environ.get("OTOOLS_AI_MEDIA_MANAGED") == "1":
+        media_keys = {name for group in MODEL_GROUPS.values()
+                      for key in [*group.get("settings", []), *(key for provider in group["providers"] for key in provider["keys"])]
+                      for name in (key["env"], *key.get("aliases", ()))}
+        media_keys.update({f"{prefix}_{suffix}" for prefix in ["IMG", "VIDEO", "VOICE", "ASR", "EMBEDDINGS", "MUSIC"]
+                           for suffix in ["MODEL", "BASE_URL", "API_KEY", "PROVIDER"]})
+        for key in media_keys:
+            values.pop(key, None)
+        for prefix in ["IMG", "VIDEO", "VOICE", "ASR", "EMBEDDINGS"]:
+            for suffix in ["MODEL", "BASE_URL", "API_KEY", "PROVIDER"]:
+                key = f"{prefix}_{suffix}"
+                values[key] = os.environ.get(key, "")
     return values
 
 
